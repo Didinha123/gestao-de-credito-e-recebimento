@@ -386,3 +386,61 @@ pre.json { background: var(--surface-2); border: 1px solid var(--border); border
 /* Faixa de avisos acima das telas (index.html) */
 .content-banner { padding-bottom: 0; }
 .content-banner:empty { display: none; }
+
+/* ----------------------------------------------------------------- nota promissória */
+.np-list { display: flex; flex-direction: column; gap: 1rem; }
+.np-wrap { container-type: inline-size; width: 100%; overflow-x: auto; break-inside: avoid; page-break-inside: avoid; }
+.np {
+  display: flex; gap: 1.2em; padding: 1.1em;
+  font-family: Arial, "Helvetica Neue", sans-serif; font-size: clamp(10.4px, 1.62cqw, 13.5px); min-width: 640px; color: #1b1b1b;
+  background-color: #fdfbe2;
+  background-image: repeating-linear-gradient(0deg, rgba(190, 170, 60, .13) 0 1px, transparent 1px 7px);
+  border: 2px solid #3a3a3a; border-radius: 1.2em; line-height: 1.25;
+}
+.np-aval {
+  flex: 0 0 15%; display: flex; flex-direction: row; align-items: stretch; gap: .4em;
+  border: 1.5px solid #3a3a3a; border-radius: .8em; padding: .6em .4em; background: #fffbe0;
+}
+.np-aval > span { writing-mode: vertical-rl; transform: rotate(180deg); white-space: nowrap; font-weight: 700; font-size: .82em; }
+.np-aval-title { font-size: 1em !important; align-self: center; }
+.np-aval-brasao { color: #e3c400; letter-spacing: .05em; align-self: center; font-size: .9em !important; }
+.np-aval-col { border-left: 1px dotted #555; padding-left: .2em; text-align: right; flex: 1; }
+.np-main { flex: 1; min-width: 0; border: 1.5px solid #3a3a3a; border-radius: .8em; padding: .9em 1.1em; background: rgba(255, 255, 255, .25); }
+.np-row { display: flex; align-items: flex-end; gap: .45em; margin-bottom: .7em; white-space: nowrap; min-width: 0; }
+.np-row:last-child { margin-bottom: 0; }
+.np-small { font-size: .85em; }
+.np-big { font-size: 1.45em; }
+.np-titulo { font-size: 1.25em; letter-spacing: .02em; }
+.np-fill {
+  border-bottom: 1.5px dotted #444; padding: 0 .35em .05em; min-height: 1.3em;
+  font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive; color: #10318a; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.np-box {
+  border: 1.5px solid #555; border-radius: .7em; background: #ebebeb; padding: .3em .7em; min-height: 1.6em;
+  font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive; color: #10318a; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.np-grow { flex: 1 1 auto; min-width: 0; }
+.np-num { min-width: 5.5em; text-align: center; }
+.np-valor { min-width: 9em; text-align: right; margin-left: auto; }
+.np-w3 { min-width: 3em; text-align: center; } .np-w4 { min-width: 4em; text-align: center; } .np-w5 { min-width: 5em; text-align: center; }
+.np-w8 { min-width: 8em; text-align: center; } .np-w14 { min-width: 13em; }
+.np-sign { height: 3.4em; display: flex; align-items: flex-end; justify-content: center; }
+.np-sign img { max-height: 3.6em; max-width: 60%; margin-bottom: -.4em; }
+
+/* ----------------------------------------------------------------- assinatura pública */
+.public-body { min-height: 100vh; background: var(--bg); }
+.public-wrap { max-width: 980px; margin: 0 auto; padding: 1.25rem; }
+.public-header { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.25rem; }
+.public-header .brand-mark { flex: 0 0 40px; height: 40px; font-size: 18px; }
+.signature-pad { width: 100%; height: 170px; border: 2px dashed var(--border); border-radius: var(--radius-sm); background: #fff; touch-action: none; cursor: crosshair; display: block; }
+.signature-actions { display: flex; justify-content: space-between; align-items: center; gap: .5rem; margin-top: .35rem; }
+.link-box { display: flex; gap: .5rem; }
+.link-box input { font-family: var(--mono); font-size: 12px; }
+.btn-whatsapp { background: #1f9d55; border-color: #1f9d55; color: #fff; }
+.btn-whatsapp:hover { background: #17834a; text-decoration: none; }
+@media print {
+  body.printing-public .public-wrap > :not(.np-print) { display: none !important; }
+  .np-wrap { margin-bottom: 6mm; }
+}
