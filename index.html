@@ -117,6 +117,9 @@
     <ul id="results" class="tests-list"></ul>
   </main>
 
+  <!-- ======================= ASSINATURA DO CLIENTE (index.html#assinar?t=...) ======================= -->
+  <div id="public-screen" class="public-body hidden"></div>
+
   <!-- ======================= ÁREA AUTENTICADA ======================= -->
   <div class="layout hidden" id="app-shell">
     <aside id="sidebar"></aside>
@@ -322,6 +325,9 @@
     <input type="text" id="o-cnpj" name="cnpj" inputmode="numeric" maxlength="18"><span class="error-msg"></span></div>
     <div class="field"><label for="o-alerta">Alerta de vencimento (dias)</label>
     <input type="number" id="o-alerta" name="dias_alerta" min="1" max="60"><span class="error-msg"></span></div>
+    <div class="field full"><label for="o-praca">Praça de pagamento</label>
+    <input type="text" id="o-praca" name="praca_pagamento" maxlength="150" placeholder="Ex.: São Paulo/SP">
+    <span class="hint">Preenche o campo "pagável em" das notas promissórias.</span></div>
     </div>
     <div class="mt-2 admin-only"><button type="submit" class="btn btn-primary">Salvar organização</button></div>
     </form>
