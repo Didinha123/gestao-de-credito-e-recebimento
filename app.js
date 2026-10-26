@@ -28,7 +28,7 @@
  * O sistema se recusa a iniciar se detectar uma chave secreta.
  */
 window.APP_CONFIG = Object.freeze({
-  SUPABASE_URL: 'https://qxwpdbhciukwspscziik.supabase.co/rest/v1/',
+  SUPABASE_URL: 'https://qxwpdbhciukwspscziik.supabase.co',
   SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_-W_AsuDH-dyEVrijJkrktA_S3nAbUEY',
   APP_NAME: 'CrediGestor',
   TIMEZONE: 'America/Sao_Paulo',
