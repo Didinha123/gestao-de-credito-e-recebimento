@@ -346,7 +346,7 @@ window.APP_CONFIG = Object.freeze({
   const LABELS = {
     papel: { admin: 'Administrador', gestor: 'Gestor', operador: 'Operador', consulta: 'Consulta' },
     clienteStatus: { ativo: ['Ativo', 'success'], inativo: ['Inativo', 'neutral'], arquivado: ['Arquivado', 'neutral'] },
-    contratoStatus: { ativo: ['Ativo', 'info'], quitado: ['Quitado', 'success'], renegociado: ['Renegociado', 'warning'], cancelado: ['Cancelado', 'neutral'] },
+    contratoStatus: { pendente_assinatura: ['Aguardando assinatura', 'warning'], ativo: ['Ativo', 'info'], quitado: ['Quitado', 'success'], renegociado: ['Renegociado', 'warning'], cancelado: ['Cancelado', 'neutral'] },
     parcelaStatus: { aberta: ['Em aberto', 'info'], parcial: ['Parcial', 'warning'], paga: ['Paga', 'success'], renegociada: ['Renegociada', 'neutral'], cancelada: ['Cancelada', 'neutral'] },
     situacao: { vencida: ['Vencida', 'danger'], a_vencer: ['Vence em breve', 'warning'], em_dia: ['Em dia', 'info'], paga: ['Paga', 'success'], renegociada: ['Renegociada', 'neutral'], cancelada: ['Cancelada', 'neutral'] },
     pagamentoStatus: { confirmado: ['Confirmado', 'success'], estornado: ['Estornado', 'danger'] },
@@ -684,6 +684,80 @@ window.APP_CONFIG = Object.freeze({
       if (error) throw error;
       return data;
     },
+
+    // ------------------------------------------------------------ nota promissória
+    /**
+     * Uma nota promissória (modelo tradicional) para a parcela p.
+     * d = { organizacao, cliente, contrato, assinatura } (formato de _dados_notas no banco).
+     */
+    notaPromissoria(d, p) {
+      const F = window.Finance;
+      const { organizacao: org, cliente: cli, contrato: ct, assinatura: ass } = d;
+      const esc = U.esc;
+      const v = F.dataPorExtenso(String(p.vencimento));
+      const ext = F.valorPorExtenso(String(p.valor));
+      const palavras = ext.split(' ');
+      let linha1 = '';
+      while (palavras.length && `${linha1} ${palavras[0]}`.trim().length <= 54) linha1 = `${linha1} ${palavras.shift()}`.trim();
+      const linha2 = palavras.join(' ');
+      const valor = Number(p.valor).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const dias = v.dia === 1 ? 'primeiro dia' : `${v.diaExtenso} dias`;
+      const assinada = ass && ass.status === 'assinado' && ass.assinatura_imagem;
+      return `<div class="np-wrap"><article class="np" aria-label="Nota promissória ${p.numero} de ${ct.qtd_parcelas}">
+        <div class="np-aval" aria-hidden="true">
+          <span class="np-aval-title">AVALISTAS</span>
+          <span class="np-aval-brasao">REPÚBLICA FEDERATIVA DO BRASIL</span>
+          <span class="np-aval-col">CPF/CNPJ</span><span class="np-aval-col">ENDEREÇO</span>
+          <span class="np-aval-col">CPF/CNPJ</span><span class="np-aval-col">ENDEREÇO</span>
+        </div>
+        <div class="np-main">
+          <div class="np-row"><b class="np-big">Nº</b><span class="np-box np-num">${p.numero}/${ct.qtd_parcelas}</span>
+            <span>Vencimento</span><span class="np-fill np-w3">${v.dia}</span><span>de</span>
+            <span class="np-fill np-grow">${esc(v.mes)}</span><span>de</span><span class="np-fill np-w4">${v.ano}</span>
+            <b class="np-big">R$</b><span class="np-box np-valor">${valor}</span></div>
+          <div class="np-row"><span>Ao(s)</span><span class="np-fill np-grow">${esc(dias)} do mês de ${esc(v.mes)} do ano de ${esc(v.anoExtenso)}</span></div>
+          <div class="np-row"><span class="np-fill np-grow">(${U.date(p.vencimento)})</span><span>pagar</span><span class="np-fill np-w5">ei</span>
+            <span>por esta única via de</span><b class="np-titulo">NOTA PROMISSÓRIA</b></div>
+          <div class="np-row"><span>a</span><span class="np-fill np-grow">${esc(org.nome)}</span>
+            <span>CPF/CNPJ</span><span class="np-fill np-w14">${esc(U.formatCNPJ(org.cnpj || ''))}</span></div>
+          <div class="np-row"><span>Ou à sua ordem, a quantia de</span><span class="np-box np-grow">${esc(linha1)}</span></div>
+          <div class="np-row"><span class="np-box np-grow">${esc(linha2 || '* * *')}</span></div>
+          <div class="np-row"><span>em moeda corrente deste país, pagável em</span><span class="np-fill np-grow">${esc(org.praca_pagamento || '')}</span></div>
+          <div class="np-row np-small"><span>EMITENTE</span><span class="np-fill np-grow">${esc(cli.nome)}</span>
+            <span>DATA DA EMISSÃO</span><span class="np-fill np-w8">${U.date(ct.data_contratacao)}</span></div>
+          <div class="np-row np-small"><span>CPF/CNPJ</span><span class="np-fill np-w14">${esc(U.formatCPF(cli.cpf || ''))}</span>
+            <span>ENDEREÇO</span><span class="np-fill np-grow">${esc(cli.endereco || '')}</span></div>
+          <div class="np-row np-small"><span class="np-fill np-grow np-sign">${assinada
+            ? `<img src="${esc(ass.assinatura_imagem)}" alt="Assinatura de ${esc(ass.nome_assinante || cli.nome)}">` : ''}</span>
+            <span>ASS. DO EMITENTE</span></div>
+        </div>
+      </article></div>`;
+    },
+
+    /** Todas as notas promissórias do contrato. */
+    notasPromissorias(d) {
+      return `<div class="np-list">${(d.parcelas || []).map((p) => U.notaPromissoria(d, p)).join('')}</div>`;
+    },
+
+    /** Mensagem de WhatsApp com o link de assinatura. */
+    mensagemAssinatura({ cliente, org, contrato, link, expira }) {
+      const nome = String(cliente.nome || '').split(' ')[0];
+      return `Olá, ${nome}! Tudo bem?\n\n` +
+        `Segue o link para você conferir e assinar o contrato nº ${contrato.numero} com ${org.nome}:\n\n` +
+        `• Valor: ${U.money(contrato.principal)}\n` +
+        `• Parcelas: ${contrato.qtd_parcelas}x de ${U.money(contrato.valor_parcela)} (1º vencimento em ${U.date(contrato.primeiro_vencimento)})\n` +
+        `• Total a pagar: ${U.money(contrato.total_projetado)}\n\n` +
+        `No link aparecem as notas promissórias de cada parcela. Para assinar, confirme seu CPF e desenhe sua assinatura.\n\n` +
+        `${link}\n\n` +
+        `O link é válido até ${U.datetime(expira)}.`;
+    },
+
+    /** Link wa.me para o telefone do cliente (DDD + número, 10 ou 11 dígitos). */
+    whatsappUrl(telefone, mensagem) {
+      const d = U.digits(telefone);
+      if (d.length < 10 || d.length > 11) return null;
+      return `https://wa.me/55${d}?text=${encodeURIComponent(mensagem)}`;
+    },
   };
 
   // ---------------------------------------------------------------- tabela paginada
@@ -874,6 +948,188 @@ window.APP_CONFIG = Object.freeze({
     document.querySelector('.auth-card p').textContent = message;
   }
 
+  // ---------------------------------------------------------------- assinatura do cliente (index.html#assinar?t=TOKEN)
+  /** Campo para desenhar a assinatura com dedo ou mouse. */
+  function signaturePad(canvas) {
+    const ctx = canvas.getContext('2d');
+    let desenhando = false;
+    let vazio = true;
+    let ultimo = null;
+    const preparar = () => {
+      const r = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(r.width * dpr);
+      canvas.height = Math.round(r.height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.lineWidth = 2.4;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = '#10318a';
+      vazio = true;
+    };
+    const pos = (e) => { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    canvas.addEventListener('pointerdown', (e) => {
+      desenhando = true;
+      ultimo = pos(e);
+      canvas.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!desenhando) return;
+      const p = pos(e);
+      ctx.beginPath();
+      ctx.moveTo(ultimo.x, ultimo.y);
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+      ultimo = p;
+      vazio = false;
+      e.preventDefault();
+    });
+    ['pointerup', 'pointercancel'].forEach((t) => canvas.addEventListener(t, () => { desenhando = false; }));
+    preparar();
+    return {
+      limpar: preparar,
+      vazio: () => vazio,
+      /** PNG reduzido (até 600 px de largura) para não pesar no banco. */
+      imagem() {
+        const largura = Math.min(600, canvas.width);
+        const out = document.createElement('canvas');
+        out.width = largura;
+        out.height = Math.round(largura * canvas.height / canvas.width);
+        out.getContext('2d').drawImage(canvas, 0, 0, out.width, out.height);
+        return out.toDataURL('image/png');
+      },
+    };
+  }
+
+  async function telaAssinatura(token) {
+    ['auth-screen', 'tests-screen'].forEach((id) => { const e = document.getElementById(id); if (e) e.remove(); });
+    const root = document.getElementById('public-screen');
+    root.classList.remove('hidden');
+    document.body.classList.remove('auth-pending');
+    document.title = `Assinatura de contrato — ${cfg.APP_NAME || 'CrediGestor'}`;
+    const falha = (msg) => {
+      root.innerHTML = `<div class="public-wrap"><div class="card">${U.errorHTML(msg, false)}</div></div>`;
+    };
+    if (Auth.problem) { falha('Sistema temporariamente indisponível. Tente novamente mais tarde.'); return; }
+    if (!/^[0-9a-f]{64}$/.test(token)) { falha('Link de assinatura inválido. Confira se copiou o endereço completo.'); return; }
+    root.innerHTML = `<div class="public-wrap">${U.loadingHTML('Carregando contrato...')}</div>`;
+
+    const carregar = async () => {
+      try {
+        render(await U.rpc('obter_assinatura', { p_token: token }));
+      } catch (err) {
+        falha(U.errorMessage(err));
+      }
+    };
+
+    function render(d) {
+      const esc = U.esc;
+      const ct = d.contrato;
+      const n = (d.parcelas || []).length;
+      const assinado = d.assinatura && d.assinatura.status === 'assinado';
+      const parcelas = d.parcelas || [];
+      const valores = [...new Set(parcelas.map((p) => Number(p.valor).toFixed(2)))];
+      const parcelaTxt = valores.length === 1 ? `${n}x de ${U.money(valores[0])}` : `${n} parcelas de ${U.money(parcelas[0].valor)} a ${U.money(parcelas[n - 1].valor)}`;
+      const cetA = ct.cet_mensal === null ? null : window.Finance.annualFromMonthly(Number(ct.cet_mensal));
+      root.innerHTML = `<div class="public-wrap">
+        <header class="public-header"><span class="brand-mark">₢</span>
+          <div><h1 class="mb-0">${esc(d.organizacao.nome)}</h1>
+          <div class="muted">Contrato nº ${esc(ct.numero)} · ${assinado ? 'assinado' : 'aguardando sua assinatura'}</div></div></header>
+        ${assinado
+          ? `<div class="alert alert-success"><strong>Contrato assinado</strong> em ${esc(U.datetime(d.assinatura.assinado_em))}
+              por ${esc(d.assinatura.nome_assinante)}. Guarde uma cópia das notas promissórias (botão "Imprimir / salvar PDF").</div>`
+          : `<div class="alert alert-info">Confira o resumo e as notas promissórias abaixo. Para assinar, preencha seus dados no final da página.
+              <button type="button" class="btn btn-sm btn-primary mt-1" id="btn-ir-assinar">Ir para a assinatura</button></div>`}
+        <section class="card mb-2"><div class="card-header"><h2>Resumo do contrato</h2></div><div class="card-body">
+          <div class="summary-grid">
+            <div class="summary-item"><div class="label">Emitente</div><div class="value" style="font-size:.95rem">${esc(d.cliente.nome)}</div></div>
+            <div class="summary-item"><div class="label">Valor liberado</div><div class="value">${U.money(ct.principal)}</div></div>
+            <div class="summary-item"><div class="label">Parcelas</div><div class="value" style="font-size:.95rem">${esc(parcelaTxt)}</div></div>
+            <div class="summary-item"><div class="label">Total a pagar</div><div class="value">${U.money(ct.total_projetado)}</div></div>
+            <div class="summary-item"><div class="label">Juros</div><div class="value">${U.money(ct.total_juros)}</div></div>
+            <div class="summary-item"><div class="label">Encargos</div><div class="value">${U.money(ct.encargos)}</div></div>
+            <div class="summary-item"><div class="label">Taxa de juros</div><div class="value">${U.pct(ct.taxa_juros_mensal)} a.m.</div></div>
+            <div class="summary-item"><div class="label">CET</div><div class="value">${ct.cet_mensal === null ? '—' : `${U.pct(ct.cet_mensal)} a.m.`}</div>
+              <div class="small muted">${cetA === null ? '' : `${U.pct(cetA)} a.a.`}</div></div>
+            <div class="summary-item"><div class="label">1º vencimento</div><div class="value">${U.date(parcelas.length ? parcelas[0].vencimento : ct.primeiro_vencimento)}</div></div>
+          </div></div></section>
+        <section class="np-print">
+          <div class="page-header"><h2 class="mb-0">Notas promissórias (${n})</h2>
+            <button type="button" class="btn no-print" id="btn-print">${U.icon('printer')} Imprimir / salvar PDF</button></div>
+          <p class="small muted no-print">No celular, arraste cada nota para o lado para vê-la por completo.</p>
+          ${U.notasPromissorias(d)}
+        </section>
+        ${assinado ? '' : `<section class="card mt-3" id="sign-card"><div class="card-header"><h2>Assinar contrato</h2></div><div class="card-body">
+          <form id="form-assinar" novalidate><div class="form-grid">
+            <div class="field"><label for="as-nome">Nome completo <span class="req">*</span></label>
+              <input type="text" id="as-nome" name="nome" autocomplete="name" maxlength="150"><span class="error-msg"></span></div>
+            <div class="field"><label for="as-cpf">CPF <span class="req">*</span></label>
+              <input type="text" id="as-cpf" name="cpf" inputmode="numeric" maxlength="14" autocomplete="off">
+              <span class="hint">Usado para confirmar sua identidade.</span><span class="error-msg"></span></div>
+            <div class="field full"><label for="as-pad">Assinatura <span class="req">*</span></label>
+              <canvas class="signature-pad" id="as-pad" aria-label="Área para desenhar a assinatura"></canvas>
+              <div class="signature-actions"><span class="hint">Desenhe sua assinatura com o dedo ou o mouse.</span>
+                <button type="button" class="btn btn-sm" id="as-limpar">Limpar</button></div>
+              <span class="error-msg" id="as-pad-erro" style="display:none"></span></div>
+            <div class="field full"><label class="checkbox"><input type="checkbox" name="aceite">
+              <span>Li e concordo com as condições acima. Declaro que emito as ${n} notas promissórias apresentadas em favor de
+              ${esc(d.organizacao.nome)} e reconheço esta assinatura eletrônica como minha.</span></label><span class="error-msg"></span></div>
+          </div>
+          <button type="submit" class="btn btn-primary mt-2" style="width:100%">Assinar contrato</button></form>
+        </div></section>`}
+      </div>`;
+
+      root.querySelector('#btn-print').addEventListener('click', () => {
+        document.body.classList.add('printing-public');
+        window.print();
+        setTimeout(() => document.body.classList.remove('printing-public'), 500);
+      });
+      if (assinado) return;
+
+      root.querySelector('#btn-ir-assinar').addEventListener('click', () => root.querySelector('#sign-card').scrollIntoView({ behavior: 'smooth' }));
+      const form = root.querySelector('#form-assinar');
+      const pad = signaturePad(root.querySelector('#as-pad'));
+      const padErro = root.querySelector('#as-pad-erro');
+      root.querySelector('#as-limpar').addEventListener('click', () => pad.limpar());
+      form.cpf.addEventListener('blur', () => { if (form.cpf.value) form.cpf.value = U.formatCPF(form.cpf.value); });
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        U.clearErrors(form);
+        padErro.style.display = 'none';
+        const nome = form.nome.value.trim().replace(/\s+/g, ' ');
+        let ok = true;
+        if (nome.length < 5 || !nome.includes(' ')) { U.fieldError(form, 'nome', 'Informe seu nome completo.'); ok = false; }
+        if (!U.validCPF(form.cpf.value)) { U.fieldError(form, 'cpf', 'CPF inválido.'); ok = false; }
+        if (pad.vazio()) { padErro.textContent = 'Desenhe sua assinatura.'; padErro.style.display = 'block'; ok = false; }
+        if (!form.aceite.checked) { U.fieldError(form, 'aceite', 'É necessário aceitar para assinar.'); ok = false; }
+        if (!ok) { U.focusFirstError(form); return; }
+        const btn = form.querySelector('button[type=submit]');
+        U.busy(btn, true, 'Assinando...');
+        try {
+          const res = await U.rpc('assinar_contrato', {
+            p_token: token, p_nome: nome, p_cpf: U.digits(form.cpf.value), p_assinatura: pad.imagem(), p_aceite: true,
+          });
+          if (!res || !res.ok) {
+            U.busy(btn, false);
+            U.toast((res && res.erro) || 'Não foi possível assinar.', 'error', 9000);
+            if (res && /cancelado/.test(res.erro || '')) await carregar();
+            return;
+          }
+          U.toast('Contrato assinado com sucesso!', 'success', 8000);
+          await carregar();
+          window.scrollTo(0, 0);
+        } catch (err) {
+          U.busy(btn, false);
+          U.toast(U.errorMessage(err), 'error', 9000);
+        }
+      });
+    }
+
+    await carregar();
+  }
+
   // ---------------------------------------------------------------- navegação (index.html#tela)
   const pages = {};
   let ctxAtual = null;
@@ -953,6 +1209,10 @@ window.APP_CONFIG = Object.freeze({
     /** Ponto de entrada do index.html. */
     async boot() {
       const hash = location.hash;
+      if (hash.startsWith('#assinar')) { // página pública de assinatura (sem login)
+        await telaAssinatura(new URLSearchParams(hash.split('?')[1] || '').get('t') || '');
+        return;
+      }
       if (hash === '#testes') { // testes do motor financeiro: não exigem login
         document.getElementById('auth-screen').remove();
         document.getElementById('tests-screen').classList.remove('hidden');
@@ -1174,6 +1434,66 @@ window.APP_CONFIG = Object.freeze({
 
   const annualFromMonthly = (m) => (m === null ? null : Math.pow(1 + m, 12) - 1);
 
+  // ---------- Valores e datas por extenso (notas promissórias) ----------
+  const UNIDADES = ['zero', 'um', 'dois', 'três', 'quatro', 'cinco', 'seis', 'sete', 'oito', 'nove', 'dez',
+    'onze', 'doze', 'treze', 'quatorze', 'quinze', 'dezesseis', 'dezessete', 'dezoito', 'dezenove'];
+  const DEZENAS = ['', '', 'vinte', 'trinta', 'quarenta', 'cinquenta', 'sessenta', 'setenta', 'oitenta', 'noventa'];
+  const CENTENAS = ['', 'cento', 'duzentos', 'trezentos', 'quatrocentos', 'quinhentos', 'seiscentos', 'setecentos', 'oitocentos', 'novecentos'];
+  const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+
+  /** 0–999 por extenso. */
+  function ateMil(n) {
+    if (n < 20) return UNIDADES[n];
+    if (n < 100) return DEZENAS[Math.floor(n / 10)] + (n % 10 ? ' e ' + UNIDADES[n % 10] : '');
+    if (n === 100) return 'cem';
+    return CENTENAS[Math.floor(n / 100)] + (n % 100 ? ' e ' + ateMil(n % 100) : '');
+  }
+
+  /** Inteiro não negativo (até trilhões) por extenso: 1234 → "mil duzentos e trinta e quatro". */
+  function numeroPorExtenso(valor) {
+    let n = BigInt(valor);
+    if (n < 0n) throw new Error('Número negativo');
+    if (n === 0n) return 'zero';
+    const escalas = [['', ''], ['mil', 'mil'], ['milhão', 'milhões'], ['bilhão', 'bilhões'], ['trilhão', 'trilhões']];
+    const grupos = [];
+    for (let i = 0; n > 0n; i++, n /= 1000n) grupos.push({ v: Number(n % 1000n), i });
+    if (grupos.length > escalas.length) throw new Error('Número muito grande');
+    const partes = grupos.filter((g) => g.v).reverse().map((g) => {
+      if (g.i === 0) return { t: ateMil(g.v), v: g.v, i: 0 };
+      if (g.i === 1) return { t: g.v === 1 ? 'mil' : `${ateMil(g.v)} mil`, v: g.v, i: 1 };
+      return { t: `${ateMil(g.v)} ${g.v === 1 ? escalas[g.i][0] : escalas[g.i][1]}`, v: g.v, i: g.i };
+    });
+    // Último grupo < 100 ou centena redonda liga com "e" ("mil e cem"); unidades após o milhar, com espaço
+    // ("mil duzentos e trinta"); demais grupos, com vírgula ("um milhão, duzentos mil").
+    return partes.reduce((acc, p, idx) => {
+      if (idx === 0) return p.t;
+      const usaE = idx === partes.length - 1 && (p.v < 100 || p.v % 100 === 0);
+      return acc + (usaE ? ' e ' : p.i === 0 ? ' ' : ', ') + p.t;
+    }, '');
+  }
+
+  /** Valor em reais por extenso: "1234.56" → "mil duzentos e trinta e quatro reais e cinquenta e seis centavos". */
+  function valorPorExtenso(valor) {
+    const c = typeof valor === 'bigint' ? valor : toCents(valor);
+    if (c < 0n) throw new Error('Valor negativo');
+    const reais = c / 100n;
+    const cent = Number(c % 100n);
+    const partes = [];
+    if (reais > 0n) {
+      const ext = numeroPorExtenso(reais);
+      const deReais = reais >= 1000000n && reais % 1000000n === 0n; // "um milhão de reais"
+      partes.push(`${ext} ${deReais ? 'de ' : ''}${reais === 1n ? 'real' : 'reais'}`);
+    }
+    if (cent > 0) partes.push(`${ateMil(cent)} ${cent === 1 ? 'centavo' : 'centavos'}`);
+    return partes.length ? partes.join(' e ') : 'zero real';
+  }
+
+  /** "2026-11-25" → { dia: 25, mes: 'novembro', ano: 2026, diaExtenso: 'vinte e cinco', anoExtenso: 'dois mil e vinte e seis' } */
+  function dataPorExtenso(iso) {
+    const { y, m, d } = parseISO(iso);
+    return { dia: d, mes: MESES[m - 1], ano: y, diaExtenso: numeroPorExtenso(d), anoExtenso: numeroPorExtenso(y) };
+  }
+
   /**
    * Imputação de pagamento (mesma regra do banco): juros → encargos → principal.
    * parcela: { juros, encargos, principal, pagoJuros, pagoEncargos, pagoPrincipal } em centavos.
@@ -1196,6 +1516,7 @@ window.APP_CONFIG = Object.freeze({
     divRound, parseDecimal, formatScaled, toCents, centsToString, rateFromPercent, rateToString,
     periodRate, addMonths, addDays, diffDays, dueDate, defaultFirstDue,
     schedule, cetMensal, annualFromMonthly, allocatePayment,
+    numeroPorExtenso, valorPorExtenso, dataPorExtenso,
   };
 });
 
@@ -1619,7 +1940,7 @@ window.APP_CONFIG = Object.freeze({
 (function () {
   'use strict';
   const { esc, date } = U;
-  const COLS = 'id, nome, cpf_mascarado, telefone, email, data_cadastro, status, observacoes, consentimento_lgpd, consentimento_em, anonimizado_em, created_at';
+  const COLS = 'id, nome, cpf_mascarado, telefone, email, endereco, data_cadastro, status, observacoes, consentimento_lgpd, consentimento_em, anonimizado_em, created_at';
   let table;
 
   function actions(r) {
@@ -1659,6 +1980,10 @@ window.APP_CONFIG = Object.freeze({
             <input type="text" id="c-tel" name="telefone" inputmode="tel" maxlength="16" value="${esc(row && row.telefone ? U.formatPhone(row.telefone) : '')}" placeholder="(00) 00000-0000"><span class="error-msg"></span></div>
           <div class="field"><label for="c-email">E-mail</label>
             <input type="email" id="c-email" name="email" maxlength="150" value="${esc(row ? row.email || '' : '')}"><span class="error-msg"></span></div>
+          <div class="field full"><label for="c-end">Endereço</label>
+            <input type="text" id="c-end" name="endereco" maxlength="300" value="${esc(row ? row.endereco || '' : '')}"
+              placeholder="Rua, número, bairro, cidade/UF, CEP">
+            <span class="hint">Aparece no campo "Endereço" do emitente na nota promissória.</span></div>
           <div class="field"><label for="c-data">Data de cadastro</label>
             <input type="date" id="c-data" name="data_cadastro" max="${U.today()}" value="${esc(row ? row.data_cadastro : U.today())}"><span class="error-msg"></span></div>
           <div class="field"><label for="c-status">Status</label>
@@ -1718,6 +2043,7 @@ window.APP_CONFIG = Object.freeze({
           p_id: edit ? row.id : null, p_nome: nome, p_cpf: pCpf, p_telefone: tel || null, p_email: email || null,
           p_data_cadastro: form.data_cadastro.value || null, p_status: form.status.value,
           p_observacoes: form.observacoes.value.trim() || null, p_consentimento: form.consentimento.checked,
+          p_endereco: form.endereco.value.trim() || null,
         });
         U.toast(edit ? 'Cliente atualizado com sucesso.' : 'Cliente cadastrado com sucesso.', 'success');
         m.close();
@@ -2047,7 +2373,7 @@ window.APP_CONFIG = Object.freeze({
     const sel = form.cliente;
     let clientes = [];
     try {
-      const { data, error } = await Auth.client.from('clientes').select('id, nome, cpf_mascarado')
+      const { data, error } = await Auth.client.from('clientes').select('id, nome, cpf_mascarado, telefone')
         .eq('status', 'ativo').order('nome').limit(2000);
       if (error) throw error;
       clientes = data;
@@ -2056,7 +2382,7 @@ window.APP_CONFIG = Object.freeze({
       const f = filter.toLowerCase();
       const list = clientes.filter((c) => !f || c.nome.toLowerCase().includes(f) || (c.cpf_mascarado || '').includes(f));
       sel.innerHTML = `<option value="">${list.length ? 'Selecione o cliente' : 'Nenhum cliente ativo encontrado'}</option>` +
-        list.map((c) => `<option value="${esc(c.id)}"${c.id === preselectClientId ? ' selected' : ''}>${esc(c.nome)}${c.cpf_mascarado ? ' — ' + esc(c.cpf_mascarado) : ''}</option>`).join('');
+        list.map((c) => `<option value="${esc(c.id)}"${c.id === preselectClientId ? ' selected' : ''}>${esc(c.nome)}${c.cpf_mascarado ? ' — ' + esc(c.cpf_mascarado) : ' (sem CPF)'}</option>`).join('');
     };
     renderOptions();
     m.el.querySelector('#t-cliente-busca').addEventListener('input', (e) => renderOptions(e.target.value));
@@ -2064,28 +2390,35 @@ window.APP_CONFIG = Object.freeze({
     simulationController(m, form, async (sim, btn) => {
       U.clearErrors(form);
       if (!sel.value) { U.fieldError(form, 'cliente', 'Selecione o cliente.'); sel.focus(); return; }
+      const cliente = clientes.find((x) => x.id === sel.value);
+      if (cliente && !cliente.cpf_mascarado) {
+        U.fieldError(form, 'cliente', 'Cadastre o CPF deste cliente (Clientes → Editar): é necessário para a nota promissória e a assinatura.');
+        sel.focus();
+        return;
+      }
       const nome = sel.options[sel.selectedIndex].text;
       const ok = await U.confirm({
-        title: 'Confirmar contratação',
+        title: 'Confirmar e enviar para assinatura',
         html: true,
         message: `<p>Cliente: <strong>${esc(nome)}</strong></p>
           <p>Principal: <strong>${money(F.toCents(sim.p.principal))}</strong> em <strong>${sim.p.parcelas}x</strong>
           (${esc(U.LABELS.frequencia[sim.p.frequencia].toLowerCase())}, ${esc(sim.p.sistema)}) · Total a pagar: <strong>${money(sim.s.total)}</strong></p>
-          <p class="small muted">A liberação será lançada como saída no fluxo de caixa na data da contratação.</p>`,
-        confirmText: 'Contratar',
+          <p class="small muted">O contrato ficará <strong>aguardando a assinatura do cliente</strong>. Em seguida você poderá enviar o link
+          pelo WhatsApp. As parcelas e a liberação no caixa só são registradas quando o cliente assinar.</p>`,
+        confirmText: 'Criar e gerar link',
       });
       if (!ok) return;
-      U.busy(btn, true, 'Contratando...');
+      U.busy(btn, true, 'Criando...');
       try {
         const id = await U.rpc('criar_contrato', Object.assign({
           p_cliente_id: sel.value,
           p_principal: F.centsToString(F.toCents(sim.p.principal)),
           p_observacoes: form.observacoes.value.trim() || null,
         }, rpcTerms(sim)));
-        U.toast('Contrato criado com sucesso.', 'success');
+        U.toast('Contrato criado. Envie o link para o cliente assinar.', 'success');
         m.close();
         table.reload();
-        openDetail(id);
+        openDetail(id, { enviar: true });
       } catch (err) {
         U.busy(btn, false);
         U.toast(U.errorMessage(err), 'error', 9000);
@@ -2094,18 +2427,23 @@ window.APP_CONFIG = Object.freeze({
   }
 
   // ------------------------------------------------------------------ detalhe
-  async function openDetail(id) {
+  async function openDetail(id, opts = {}) {
     const m = U.modal({ title: 'Contrato', size: 'xl', body: U.loadingHTML() });
+    let primeiraVez = true;
     async function render() {
       m.body.innerHTML = U.loadingHTML();
       try {
-        const [c, parc, pags] = await Promise.all([
+        const [c, parc, pags, ass] = await Promise.all([
           Auth.client.from('vw_contratos').select('*').eq('id', id).single(),
           Auth.client.from('vw_parcelas').select('*').eq('contrato_id', id).order('numero'),
           Auth.client.from('vw_pagamentos').select('*').eq('contrato_id', id).order('created_at', { ascending: false }),
+          Auth.client.from('assinaturas').select('status, expira_em, assinado_em, nome_assinante, tentativas, ip, created_at')
+            .eq('contrato_id', id).order('created_at', { ascending: false }).limit(1),
         ]);
-        for (const r of [c, parc, pags]) if (r.error) throw r.error;
-        renderDetail(m, c.data, parc.data, pags.data, render);
+        for (const r of [c, parc, pags, ass]) if (r.error) throw r.error;
+        renderDetail(m, c.data, parc.data, pags.data, ass.data[0] || null, render);
+        if (primeiraVez && opts.enviar && c.data.status === 'pendente_assinatura') openEnvio(c.data, render);
+        primeiraVez = false;
       } catch (err) {
         m.body.innerHTML = U.errorHTML(U.errorMessage(err), false);
       }
@@ -2113,11 +2451,105 @@ window.APP_CONFIG = Object.freeze({
     await render();
   }
 
-  function renderDetail(m, c, parcelas, pagamentos, refresh) {
+  function assinaturaHTML(c, a) {
+    if (c.status === 'pendente_assinatura') {
+      const situacao = !a ? 'Nenhum link enviado ainda.'
+        : a.status === 'pendente' && new Date(a.expira_em) < new Date() ? `Link expirado em ${esc(U.datetime(a.expira_em))}. Gere um novo link.`
+        : a.status === 'pendente' ? `Link enviado em ${esc(U.datetime(a.created_at))}, válido até ${esc(U.datetime(a.expira_em))}.`
+        : a.status === 'cancelado' ? 'O último link foi cancelado (novo link gerado ou tentativas incorretas). Gere um novo link.' : '';
+      return `<div class="alert alert-warning"><strong>Aguardando assinatura do cliente.</strong> ${situacao}
+        As parcelas e a liberação no caixa serão registradas quando o cliente assinar.</div>`;
+    }
+    if (a && a.status === 'assinado') {
+      return `<div class="alert alert-success"><strong>Assinado pelo cliente</strong> em ${esc(U.datetime(a.assinado_em))}
+        por ${esc(a.nome_assinante)}${a.ip ? ` · IP ${esc(a.ip)}` : ''}.</div>`;
+    }
+    return '';
+  }
+
+  /** Gera o link de assinatura e oferece o envio pelo WhatsApp. */
+  async function openEnvio(c, onDone) {
+    const m = U.modal({ title: `Enviar contrato nº ${c.numero} para assinatura`, size: 'lg', body: U.loadingHTML('Gerando link...') });
+    try {
+      const [link, cli] = await Promise.all([
+        U.rpc('gerar_link_assinatura', { p_contrato_id: c.id }),
+        Auth.client.from('clientes').select('nome, telefone').eq('id', c.cliente_id).single(),
+      ]);
+      if (cli.error) throw cli.error;
+      if (onDone) onDone();
+      const url = `${location.origin}${location.pathname}#assinar?t=${link.token}`;
+      const telefone = cli.data.telefone;
+      const msg = U.mensagemAssinatura({ cliente: cli.data, org: Auth.org, contrato: c, link: url, expira: link.expira_em });
+      m.body.innerHTML = `
+        <p>Envie o link ao cliente. Ao abrir, ele verá as <strong>${c.qtd_parcelas} notas promissórias</strong> (uma por parcela),
+          confirmará o CPF e assinará na tela. Gerar um novo link invalida o anterior.</p>
+        <div class="field mb-2"><label for="env-link">Link de assinatura</label>
+          <div class="link-box"><input type="text" id="env-link" readonly value="${esc(url)}">
+          <button type="button" class="btn" data-copy="link">Copiar</button></div>
+          <span class="hint">Válido até ${esc(U.datetime(link.expira_em))}.</span></div>
+        <div class="field"><label for="env-msg">Mensagem</label>
+          <textarea id="env-msg" rows="12">${esc(msg)}</textarea>
+          <span class="hint">Você pode editar a mensagem antes de enviar.</span></div>
+        ${telefone ? `<p class="small muted mt-1">WhatsApp do cliente: <strong>${esc(U.formatPhone(telefone))}</strong></p>`
+          : `<div class="alert alert-warning mt-1">Este cliente não tem telefone cadastrado. Cadastre em Clientes → Editar, ou copie a mensagem e envie por outro meio.</div>`}`;
+      let footer = m.el.querySelector('.modal-footer');
+      if (!footer) {
+        footer = document.createElement('div');
+        footer.className = 'modal-footer';
+        m.el.querySelector('.modal-inner').appendChild(footer);
+      }
+      footer.innerHTML = `<button type="button" class="btn" data-close>Fechar</button>
+        <button type="button" class="btn" data-copy="msg">Copiar mensagem</button>
+        ${telefone ? `<a class="btn btn-whatsapp" id="env-wa" target="_blank" rel="noopener noreferrer">Enviar pelo WhatsApp</a>` : ''}`;
+      const ta = m.body.querySelector('#env-msg');
+      const wa = footer.querySelector('#env-wa');
+      const atualizar = () => { if (wa) wa.href = U.whatsappUrl(telefone, ta.value) || '#'; };
+      ta.addEventListener('input', atualizar);
+      atualizar();
+      m.el.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', async () => {
+        const texto = b.dataset.copy === 'link' ? url : ta.value;
+        try {
+          await navigator.clipboard.writeText(texto);
+        } catch (_) {
+          const el = b.dataset.copy === 'link' ? m.body.querySelector('#env-link') : ta;
+          el.select();
+          document.execCommand('copy');
+        }
+        U.toast(b.dataset.copy === 'link' ? 'Link copiado.' : 'Mensagem copiada.', 'success', 2500);
+      }));
+    } catch (err) {
+      m.body.innerHTML = U.errorHTML(U.errorMessage(err), false);
+    }
+  }
+
+  /** Notas promissórias do contrato (modelo tradicional), com assinatura quando houver. */
+  async function openNotas(c) {
+    const m = U.modal({ title: `Notas promissórias — contrato nº ${c.numero}`, size: 'xl', body: U.loadingHTML(),
+      footer: `<button type="button" class="btn" data-close>Fechar</button>
+        <button type="button" class="btn btn-primary" data-print disabled>${U.icon('printer')} Imprimir / PDF</button>` });
+    try {
+      const d = await U.rpc('notas_promissorias', { p_contrato_id: c.id });
+      const a = d.assinatura;
+      m.body.innerHTML = `${a && a.status === 'assinado'
+          ? `<div class="alert alert-success">Assinadas em ${esc(U.datetime(a.assinado_em))} por ${esc(a.nome_assinante)}.</div>`
+          : '<div class="alert alert-warning">Ainda não assinadas pelo cliente.</div>'}
+        ${d.organizacao.praca_pagamento ? '' : '<div class="alert alert-info">Dica: informe a praça de pagamento ("pagável em") em Configurações → Organização.</div>'}
+        ${U.notasPromissorias(d)}`;
+      const btn = m.el.querySelector('[data-print]');
+      btn.disabled = false;
+      btn.addEventListener('click', () => U.printModal());
+    } catch (err) {
+      m.body.innerHTML = U.errorHTML(U.errorMessage(err), false);
+    }
+  }
+
+  function renderDetail(m, c, parcelas, pagamentos, assinatura, refresh) {
     m.el.querySelector('h2').textContent = `Contrato nº ${c.numero} — ${c.cliente_nome}`;
     const canPay = Auth.can('pagamentos.write') && c.status === 'ativo';
+    const pendente = c.status === 'pendente_assinatura';
     const cetA = c.cet_mensal === null ? null : F.annualFromMonthly(Number(c.cet_mensal));
     m.body.innerHTML = `
+      ${assinaturaHTML(c, assinatura)}
       <div class="summary-grid">
         <div class="summary-item"><div class="label">Status</div><div class="value">${U.statusBadge('contratoStatus', c.status)}</div></div>
         <div class="summary-item"><div class="label">Principal</div><div class="value">${money(c.principal)}</div></div>
@@ -2138,7 +2570,8 @@ window.APP_CONFIG = Object.freeze({
         ${c.observacoes ? `<dt>Observações</dt><dd>${esc(c.observacoes)}</dd>` : ''}
       </dl>
       <div class="section-title">Parcelas</div>
-      <div class="table-wrap"><table class="table table-compact responsive"><thead><tr>
+      ${pendente ? '<p class="muted">As parcelas serão geradas quando o cliente assinar. Veja os valores em "Notas promissórias".</p>' : ''}
+      <div class="table-wrap ${pendente ? 'hidden' : ''}"><table class="table table-compact responsive"><thead><tr>
         <th>Nº</th><th>Vencimento</th><th class="num">Valor</th><th class="num">Principal</th><th class="num">Juros</th><th class="num">Encargos</th>
         <th class="num">Pago</th><th class="num">Saldo</th><th>Situação</th><th></th></tr></thead><tbody>
         ${parcelas.map((p) => `<tr class="${p.situacao === 'vencida' ? 'row-highlight-danger' : p.situacao === 'a_vencer' ? 'row-highlight-warning' : ''}">
@@ -2165,11 +2598,19 @@ window.APP_CONFIG = Object.freeze({
       footer.className = 'modal-footer';
       m.el.querySelector('.modal-inner').appendChild(footer);
     }
+    const podeCancelar = pendente ? Auth.can('contratos.write')
+      : Auth.can('contratos.cancelar') && c.status === 'ativo' && !c.contrato_origem_id && Number(c.total_pago) === 0;
     footer.innerHTML = `
-      ${Auth.can('contratos.cancelar') && c.status === 'ativo' && !c.contrato_origem_id && Number(c.total_pago) === 0 ? '<button type="button" class="btn btn-danger" data-cancel>Cancelar contrato</button>' : ''}
+      ${podeCancelar ? '<button type="button" class="btn btn-danger" data-cancel>Cancelar contrato</button>' : ''}
       ${Auth.can('contratos.write') && c.status === 'ativo' ? '<button type="button" class="btn" data-reneg>Renegociar</button>' : ''}
+      ${Auth.can('pagamentos.write') && c.status !== 'cancelado' ? '<button type="button" class="btn" data-notas>Notas promissórias</button>' : ''}
       <button type="button" class="btn" data-print>${U.icon('printer')} Imprimir</button>
+      ${pendente && Auth.can('contratos.write') ? '<button type="button" class="btn btn-whatsapp" data-enviar>Enviar para assinatura</button>' : ''}
       <button type="button" class="btn btn-primary" data-close>Fechar</button>`;
+    const notas = footer.querySelector('[data-notas]');
+    if (notas) notas.addEventListener('click', () => openNotas(c));
+    const enviar = footer.querySelector('[data-enviar]');
+    if (enviar) enviar.addEventListener('click', () => openEnvio(c, refresh));
 
     m.body.querySelectorAll('[data-pay]').forEach((b) => b.addEventListener('click', () => {
       const p = parcelas.find((x) => x.id === b.dataset.pay);
@@ -2241,8 +2682,11 @@ window.APP_CONFIG = Object.freeze({
     const ok = await U.confirm({
       title: `Cancelar contrato nº ${c.numero}`,
       html: true,
-      message: `<div class="alert alert-danger">O contrato e suas parcelas serão cancelados e a devolução de ${money(c.principal)} será lançada como entrada no caixa.
-        Só é permitido quando não há pagamentos confirmados.</div>`,
+      message: c.status === 'pendente_assinatura'
+        ? `<div class="alert alert-danger">O contrato ainda não foi assinado. Ele será cancelado e o link de assinatura deixará de funcionar.
+            Nada é lançado no caixa.</div>`
+        : `<div class="alert alert-danger">O contrato e suas parcelas serão cancelados e a devolução de ${money(c.principal)} será lançada como entrada no caixa.
+            Só é permitido quando não há pagamentos confirmados.</div>`,
       confirmText: 'Cancelar contrato',
       danger: true,
       reason: { label: 'Motivo do cancelamento', minLength: 10 },
@@ -2265,7 +2709,8 @@ window.APP_CONFIG = Object.freeze({
     table = new DataTable({
       container: document.getElementById('tbl-contratos'),
       searchPlaceholder: 'Buscar por cliente ou nº do contrato',
-      filters: [{ key: 'status', label: 'Status', type: 'select', value: 'ativo', options: [
+      filters: [{ key: 'status', label: 'Status', type: 'select', value: 'abertos', options: [
+        { value: 'abertos', label: 'Ativos e aguardando assinatura' }, { value: 'pendente_assinatura', label: 'Aguardando assinatura' },
         { value: 'ativo', label: 'Ativos' }, { value: 'quitado', label: 'Quitados' }, { value: 'renegociado', label: 'Renegociados' },
         { value: 'cancelado', label: 'Cancelados' }, { value: '', label: 'Todos' }] }],
       emptyTitle: 'Nenhum contrato encontrado',
@@ -2286,7 +2731,8 @@ window.APP_CONFIG = Object.freeze({
         let q = Auth.client.from('vw_contratos')
           .select('id, numero, cliente_nome, data_contratacao, principal, parcelas_pagas, qtd_parcelas, valor_parcela, taxa_juros_mensal, saldo_aberto, proximo_vencimento, status, parcelas_vencidas', { count: 'exact' })
           .order('numero', { ascending: false }).range(from, to);
-        if (filters.status) q = q.eq('status', filters.status);
+        if (filters.status === 'abertos') q = q.in('status', ['pendente_assinatura', 'ativo']);
+        else if (filters.status) q = q.eq('status', filters.status);
         if (search) q = /^\d+$/.test(search) ? q.eq('numero', Number(search)) : q.ilike('cliente_nome', `%${search}%`);
         const { data, error, count } = await q;
         if (error) throw error;
@@ -2905,6 +3351,7 @@ window.APP_CONFIG = Object.freeze({
     f.nome.value = o.nome;
     f.cnpj.value = o.cnpj ? U.formatCNPJ(o.cnpj) : '';
     f.dias_alerta.value = o.dias_alerta_vencimento;
+    f.praca_pagamento.value = o.praca_pagamento || '';
     const c = document.getElementById('form-compliance');
     c.taxa.value = percentFromFraction(o.taxa_juros_max_mensal);
     c.data.value = o.enquadramento_data || '';
@@ -2939,7 +3386,8 @@ window.APP_CONFIG = Object.freeze({
       const btn = f.querySelector('button[type=submit]');
       U.busy(btn, true, 'Salvando...');
       try {
-        await updateOrg({ nome, cnpj: cnpj || null, dias_alerta_vencimento: dias });
+        await updateOrg({ nome, cnpj: cnpj || null, dias_alerta_vencimento: dias,
+                          praca_pagamento: f.praca_pagamento.value.trim() || null });
         U.toast('Organização atualizada.', 'success');
       } catch (err) { U.toast(U.errorMessage(err), 'error'); }
       U.busy(btn, false);
@@ -3336,6 +3784,31 @@ window.APP_CONFIG = Object.freeze({
     eq(b.juros, 0n); eq(b.encargos, c('1.00')); eq(b.principal, c('80.00'));
     throws(() => F.allocatePayment(parc, c('92.01')), 'excede saldo');
     throws(() => F.allocatePayment(parc, 0n), 'valor zero');
+  });
+
+  // ---------------------------------------------------------------- extenso
+  test('números por extenso', () => {
+    const casos = { 0: 'zero', 1: 'um', 16: 'dezesseis', 21: 'vinte e um', 100: 'cem', 101: 'cento e um',
+      115: 'cento e quinze', 999: 'novecentos e noventa e nove', 1000: 'mil', 1001: 'mil e um', 1100: 'mil e cem',
+      1234: 'mil duzentos e trinta e quatro', 2026: 'dois mil e vinte e seis', 21000: 'vinte e um mil',
+      1000000: 'um milhão', 2000000: 'dois milhões', 1000100: 'um milhão e cem',
+      1234567: 'um milhão, duzentos e trinta e quatro mil quinhentos e sessenta e sete' };
+    Object.entries(casos).forEach(([n, t]) => eq(F.numeroPorExtenso(Number(n)), t, String(n)));
+  });
+  test('valores em reais por extenso', () => {
+    eq(F.valorPorExtenso('1.00'), 'um real');
+    eq(F.valorPorExtenso('2.00'), 'dois reais');
+    eq(F.valorPorExtenso('0.01'), 'um centavo');
+    eq(F.valorPorExtenso('0.50'), 'cinquenta centavos');
+    eq(F.valorPorExtenso('88.85'), 'oitenta e oito reais e oitenta e cinco centavos');
+    eq(F.valorPorExtenso('1001.50'), 'mil e um reais e cinquenta centavos');
+    eq(F.valorPorExtenso('1000000.00'), 'um milhão de reais');
+    eq(F.valorPorExtenso('2500000.00'), 'dois milhões e quinhentos mil reais');
+    eq(F.valorPorExtenso('1234567.89'), 'um milhão, duzentos e trinta e quatro mil quinhentos e sessenta e sete reais e oitenta e nove centavos');
+  });
+  test('datas por extenso', () => {
+    const d = F.dataPorExtenso('2026-11-01');
+    eq(d.mes, 'novembro'); eq(d.diaExtenso, 'um'); eq(d.anoExtenso, 'dois mil e vinte e seis');
   });
 
   // ---------------------------------------------------------------- saída
