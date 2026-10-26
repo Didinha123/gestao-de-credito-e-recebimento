@@ -329,29 +329,26 @@
     </section>
 
     <section class="card">
-    <div class="card-header"><h2>Conformidade jurídica</h2><span id="compliance-badge"></span></div>
+    <div class="card-header"><h2>Limite de juros e registro jurídico</h2><span id="compliance-badge"></span></div>
     <div class="card-body">
-    <div class="alert alert-warning small">
-    O sistema <strong>não presume</strong> que qualquer taxa seja legal. Antes de habilitar operações reais, valide com assessoria jurídica
-    o enquadramento do negócio (ex.: instituição autorizada pelo Banco Central, SCD/SEP, ESC ou outra figura), os limites de juros
-    aplicáveis, IOF, CET, contratos e exigências do CDC e da LGPD.
-    </div>
+    <p class="small muted">Tudo aqui é opcional. Se informar uma taxa máxima, contratos acima dela são recusados.
+    Deixe em branco para não ter limite.</p>
     <form id="form-compliance" novalidate>
     <div class="form-grid">
-    <div class="field"><label for="c-taxa">Taxa máxima de juros (% a.m.) <span class="req">*</span></label>
-    <input type="text" id="c-taxa" name="taxa" inputmode="decimal" placeholder="Ex.: 2,5">
-    <span class="hint">Contratos acima deste limite são recusados pelo banco.</span><span class="error-msg"></span></div>
-    <div class="field"><label for="c-data">Data da validação <span class="req">*</span></label>
+    <div class="field"><label for="c-taxa">Taxa máxima de juros (% a.m.)</label>
+    <input type="text" id="c-taxa" name="taxa" inputmode="decimal" placeholder="Sem limite">
+    <span class="hint">Em branco = sem limite.</span><span class="error-msg"></span></div>
+    <div class="field"><label for="c-data">Data da validação</label>
     <input type="date" id="c-data" name="data"><span class="error-msg"></span></div>
-    <div class="field full"><label for="c-resp">Responsável pela validação <span class="req">*</span></label>
+    <div class="field full"><label for="c-resp">Responsável pela validação</label>
     <input type="text" id="c-resp" name="responsavel" maxlength="150" placeholder="Nome e registro profissional (ex.: OAB)">
     <span class="error-msg"></span></div>
     <div class="field full"><label for="c-obs">Fundamentação / observações</label>
     <textarea id="c-obs" name="observacoes" maxlength="2000" placeholder="Base legal, parecer, autorização regulatória, limites considerados..."></textarea></div>
     <div class="field full"><label class="checkbox"><input type="checkbox" name="validado">
-    <span>Declaro que o enquadramento jurídico, os limites de juros e os requisitos regulatórios foram validados e autorizo operações de crédito.</span></label></div>
+    <span>Registrar que o enquadramento jurídico foi validado (exige taxa, data e responsável).</span></label></div>
     </div>
-    <div class="mt-2 admin-only"><button type="submit" class="btn btn-primary">Salvar conformidade</button></div>
+    <div class="mt-2 admin-only"><button type="submit" class="btn btn-primary">Salvar</button></div>
     </form>
     </div>
     </section>
