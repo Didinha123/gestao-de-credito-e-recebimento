@@ -413,12 +413,12 @@ pre.json { background: var(--surface-2); border: 1px solid var(--border); border
 .np-titulo { font-size: 1.25em; letter-spacing: .02em; }
 .np-fill {
   border-bottom: 1.5px dotted #444; padding: 0 .35em .05em; min-height: 1.3em;
-  font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive; color: #10318a; font-weight: 600;
+  font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive; color: #000; font-weight: 600;
   overflow: hidden; text-overflow: ellipsis;
 }
 .np-box {
   border: 1.5px solid #555; border-radius: .7em; background: #ebebeb; padding: .3em .7em; min-height: 1.6em;
-  font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive; color: #10318a; font-weight: 600;
+  font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive; color: #000; font-weight: 600;
   overflow: hidden; text-overflow: ellipsis;
 }
 .np-grow { flex: 1 1 auto; min-width: 0; }
@@ -444,3 +444,31 @@ pre.json { background: var(--surface-2); border: 1px solid var(--border); border
   body.printing-public .public-wrap > :not(.np-print) { display: none !important; }
   .np-wrap { margin-bottom: 6mm; }
 }
+
+/* ----------------------------------------------------------------- comprovante (nota carimbada) */
+.np-pago-wrap { position: relative; }
+.np-carimbo {
+  position: absolute; top: 46%; left: 58%; transform: translate(-50%, -50%) rotate(-11deg);
+  display: flex; flex-direction: column; align-items: center; gap: .1rem;
+  padding: .45rem 1.1rem; border: 4px double currentColor; border-radius: 10px;
+  background: rgba(255, 255, 255, .3); font-family: Arial, sans-serif; font-size: 13px; font-weight: 700;
+  pointer-events: none; text-transform: uppercase; letter-spacing: .03em;
+}
+.np-carimbo strong { font-size: 30px; line-height: 1.05; letter-spacing: .08em; }
+.np-carimbo-pago { color: #1a7f4b; }
+.np-carimbo-parcial { color: #a86200; }
+.np-carimbo-estornado { color: #b42318; }
+.comprovante { break-inside: avoid; page-break-inside: avoid; }
+
+/* ----------------------------------------------------------------- quitação */
+.quit-opcoes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.quit-opcao { display: flex; gap: .6rem; align-items: flex-start; border: 2px solid var(--border); border-radius: var(--radius); padding: .85rem 1rem; cursor: pointer; }
+.quit-opcao input { margin-top: .3rem; }
+.quit-opcao:has(input:checked) { border-color: var(--success); background: var(--success-50); }
+.quit-opcao.quit-desabilitada { opacity: .55; cursor: not-allowed; }
+.quit-valor { font-size: 1.35rem; font-weight: 800; font-variant-numeric: tabular-nums; margin: .15rem 0; }
+@media (max-width: 640px) { .quit-opcoes { grid-template-columns: 1fr; } .np-carimbo { font-size: 11px; } .np-carimbo strong { font-size: 22px; } }
+
+/* ----------------------------------------------------------------- assinatura do cliente */
+.assinatura-box { border: 1px solid var(--border); border-radius: var(--radius); background: #fff; padding: 1rem; text-align: center; }
+.assinatura-box img { max-width: 100%; max-height: 220px; }
