@@ -765,6 +765,60 @@ window.APP_CONFIG = Object.freeze({
       if (d.length < 10 || d.length > 11) return null;
       return `https://wa.me/55${d}?text=${encodeURIComponent(mensagem)}`;
     },
+
+    /** Mensagem de WhatsApp com o link do comprovante (um ou vários pagamentos do mesmo contrato). */
+    mensagemComprovante({ cliente, pagamentos, link }) {
+      const nome = String(cliente.nome || '').split(' ')[0];
+      const g = pagamentos[0];
+      const total = pagamentos.reduce((a, x) => a + Number(x.valor), 0);
+      const corpo = pagamentos.length === 1
+        ? `• Contrato nº ${g.contrato_numero} — parcela ${g.parcela_numero}/${g.qtd_parcelas}\n` +
+          `• Valor pago: ${U.money(g.valor)}\n• Data: ${U.date(g.data_pagamento)}\n\n` +
+          `Seu comprovante (nota promissória da parcela, com o carimbo de pago):\n${link}`
+        : `• Contrato nº ${g.contrato_numero} — ${pagamentos.length} parcelas (${pagamentos.map((x) => x.parcela_numero).join(', ')})\n` +
+          `• Total pago: ${U.money(total)}\n• Data: ${U.date(g.data_pagamento)}\n\n` +
+          `Seus comprovantes (notas promissórias das parcelas, com o carimbo de pago):\n${link}`;
+      return `Olá, ${nome}! Confirmamos o recebimento do seu pagamento.\n\n${corpo}\n\nObrigado!`;
+    },
+
+    /** Janela de envio pelo WhatsApp: link copiável, mensagem editável e botão para abrir a conversa. */
+    modalWhatsApp({ titulo, intro, link, mensagem, telefone, validade }) {
+      const esc = U.esc;
+      const m = U.modal({
+        title: titulo,
+        size: 'lg',
+        body: `${intro ? `<p>${intro}</p>` : ''}
+          <div class="field mb-2"><label for="wa-link">Link</label>
+            <div class="link-box"><input type="text" id="wa-link" readonly value="${esc(link)}">
+            <button type="button" class="btn" data-copy="link">Copiar</button></div>
+            ${validade ? `<span class="hint">${esc(validade)}</span>` : ''}</div>
+          <div class="field"><label for="wa-msg">Mensagem</label>
+            <textarea id="wa-msg" rows="11">${esc(mensagem)}</textarea>
+            <span class="hint">Você pode editar a mensagem antes de enviar.</span></div>
+          ${telefone ? `<p class="small muted mt-1">WhatsApp do cliente: <strong>${esc(U.formatPhone(telefone))}</strong></p>`
+            : `<div class="alert alert-warning mt-1">Este cliente não tem telefone cadastrado. Cadastre em Clientes → Editar, ou copie a mensagem e envie por outro meio.</div>`}`,
+        footer: `<button type="button" class="btn" data-close>Fechar</button>
+          <button type="button" class="btn" data-copy="msg">Copiar mensagem</button>
+          ${telefone ? '<a class="btn btn-whatsapp" data-wa target="_blank" rel="noopener noreferrer">Enviar pelo WhatsApp</a>' : ''}`,
+      });
+      const ta = m.el.querySelector('#wa-msg');
+      const wa = m.el.querySelector('[data-wa]');
+      const atualizar = () => { if (wa) wa.href = U.whatsappUrl(telefone, ta.value) || '#'; };
+      ta.addEventListener('input', atualizar);
+      atualizar();
+      m.el.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', async () => {
+        const texto = b.dataset.copy === 'link' ? link : ta.value;
+        try {
+          await navigator.clipboard.writeText(texto);
+        } catch (_) {
+          const el = b.dataset.copy === 'link' ? m.el.querySelector('#wa-link') : ta;
+          el.select();
+          document.execCommand('copy');
+        }
+        U.toast(b.dataset.copy === 'link' ? 'Link copiado.' : 'Mensagem copiada.', 'success', 2500);
+      }));
+      return m;
+    },
   };
 
   // ---------------------------------------------------------------- tabela paginada
@@ -1137,6 +1191,52 @@ window.APP_CONFIG = Object.freeze({
     await carregar();
   }
 
+  // ---------------------------------------------------------------- comprovante do cliente (index.html#comprovante?t=TOKEN)
+  async function telaComprovante(token) {
+    ['auth-screen', 'tests-screen'].forEach((id) => { const e = document.getElementById(id); if (e) e.remove(); });
+    const root = document.getElementById('public-screen');
+    root.classList.remove('hidden');
+    document.body.classList.remove('auth-pending');
+    document.title = `Comprovante de pagamento — ${cfg.APP_NAME || 'CrediGestor'}`;
+    const falha = (msg) => { root.innerHTML = `<div class="public-wrap"><div class="card">${U.errorHTML(msg, false)}</div></div>`; };
+    if (Auth.problem) { falha('Sistema temporariamente indisponível. Tente novamente mais tarde.'); return; }
+    if (!/^[0-9a-f]{64}$/.test(token)) { falha('Link de comprovante inválido. Confira se copiou o endereço completo.'); return; }
+    root.innerHTML = `<div class="public-wrap">${U.loadingHTML('Carregando comprovante...')}</div>`;
+    let d;
+    try {
+      d = await U.rpc('obter_comprovante', { p_token: token });
+    } catch (err) {
+      falha(U.errorMessage(err));
+      return;
+    }
+    const esc = U.esc;
+    const ct = d.contrato;
+    const pags = (d.pagamentos || []).map((p) => Object.assign({}, p, { qtd_parcelas: ct.qtd_parcelas, contrato_numero: ct.numero }));
+    const confirmados = pags.filter((p) => p.status === 'confirmado');
+    const total = confirmados.reduce((a, p) => a + Number(p.valor), 0);
+    root.innerHTML = `<div class="public-wrap">
+      <header class="public-header"><span class="brand-mark">₢</span>
+        <div><h1 class="mb-0">${esc(d.organizacao.nome)}</h1>
+        <div class="muted">Comprovante de pagamento · contrato nº ${esc(ct.numero)}</div></div></header>
+      ${confirmados.length
+        ? `<div class="alert alert-success"><strong>Pagamento recebido.</strong> ${confirmados.length === 1
+            ? `Parcela ${confirmados[0].parcela_numero}/${ct.qtd_parcelas} — ${U.money(total)} em ${U.date(confirmados[0].data_pagamento)}.`
+            : `${confirmados.length} parcelas — total de ${U.money(total)}.`}</div>`
+        : '<div class="alert alert-danger"><strong>Este pagamento foi estornado.</strong> Em caso de dúvida, fale com quem enviou o link.</div>'}
+      <section class="np-print">
+        <div class="page-header"><h2 class="mb-0">${pags.length === 1 ? 'Nota promissória da parcela' : 'Notas promissórias das parcelas'}</h2>
+          <button type="button" class="btn no-print" id="btn-print">${U.icon('printer')} Imprimir / salvar PDF</button></div>
+        <p class="small muted no-print">No celular, arraste a nota para o lado para vê-la por completo.</p>
+        ${pags.map((p) => window.Pagamentos.comprovanteHTML(p, d, true)).join('<div class="divider"></div>')}
+      </section>
+    </div>`;
+    root.querySelector('#btn-print').addEventListener('click', () => {
+      document.body.classList.add('printing-public');
+      window.print();
+      setTimeout(() => document.body.classList.remove('printing-public'), 500);
+    });
+  }
+
   // ---------------------------------------------------------------- navegação (index.html#tela)
   const pages = {};
   let ctxAtual = null;
@@ -1218,6 +1318,10 @@ window.APP_CONFIG = Object.freeze({
       const hash = location.hash;
       if (hash.startsWith('#assinar')) { // página pública de assinatura (sem login)
         await telaAssinatura(new URLSearchParams(hash.split('?')[1] || '').get('t') || '');
+        return;
+      }
+      if (hash.startsWith('#comprovante')) { // página pública do comprovante (sem login)
+        await telaComprovante(new URLSearchParams(hash.split('?')[1] || '').get('t') || '');
         return;
       }
       if (hash === '#testes') { // testes do motor financeiro: não exigem login
@@ -1638,7 +1742,7 @@ window.APP_CONFIG = Object.freeze({
         m.close();
         U.toast(`Pagamento registrado. Recibo nº ${res.numero_recibo}.`, 'success');
         if (onDone) onDone(res);
-        openReceipt(res.id);
+        openReceipt(res.id, { aposPagamento: true });
       } catch (err) {
         U.busy(btn, false);
         U.toast(U.errorMessage(err), 'error', 9000);
@@ -1729,22 +1833,23 @@ window.APP_CONFIG = Object.freeze({
     });
   }
 
-  /** Detalhes do pagamento exibidos abaixo da nota promissória. */
-  function detalhesPagamento(g, parcela) {
+  /** Detalhes do pagamento exibidos abaixo da nota promissória (versão pública omite dados internos). */
+  function detalhesPagamento(g, parcela, publico) {
     const dispensa = parcela && Number(parcela.juros_dispensados) > 0;
     return `<dl class="dl small mt-1">
       <dt>Recibo</dt><dd>nº ${esc(g.numero_recibo)} · parcela ${g.parcela_numero}/${g.qtd_parcelas} do contrato nº ${esc(g.contrato_numero)}</dd>
       <dt>Valor pago</dt><dd><strong>${money(g.valor)}</strong> em ${date(g.data_pagamento)} · ${esc(U.LABELS.forma[g.forma])}</dd>
       <dt>Composição</dt><dd>Principal ${money(g.valor_principal)} · Juros ${money(g.valor_juros)} · Encargos ${money(g.valor_encargos)}</dd>
       ${dispensa ? `<dt>Juros dispensados</dt><dd>${money(parcela.juros_dispensados)} (quitação sem juros)</dd>` : ''}
-      <dt>Registrado por</dt><dd>${esc(g.registrado_por_nome || '—')} em ${esc(U.datetime(g.created_at))}</dd>
-      ${g.observacoes ? `<dt>Observações</dt><dd>${esc(g.observacoes)}</dd>` : ''}
-      ${g.status === 'estornado' ? `<dt>Estorno</dt><dd class="text-danger">${esc(U.datetime(g.estornado_em))} por ${esc(g.estornado_por_nome || '—')}: ${esc(g.estorno_motivo)}</dd>` : ''}
+      ${publico ? '' : `<dt>Registrado por</dt><dd>${esc(g.registrado_por_nome || '—')} em ${esc(U.datetime(g.created_at))}</dd>`}
+      ${!publico && g.observacoes ? `<dt>Observações</dt><dd>${esc(g.observacoes)}</dd>` : ''}
+      ${g.status === 'estornado' ? `<dt>Estorno</dt><dd class="text-danger">Pagamento estornado em ${esc(U.datetime(g.estornado_em))}${
+        publico ? '' : ` por ${esc(g.estornado_por_nome || '—')}: ${esc(g.estorno_motivo)}`}</dd>` : ''}
     </dl>`;
   }
 
   /** Comprovante: a nota promissória da parcela com carimbo de pagamento. */
-  function comprovanteHTML(g, notas) {
+  function comprovanteHTML(g, notas, publico) {
     const parcela = notas && (notas.parcelas || []).find((p) => p.numero === g.parcela_numero);
     if (!parcela) return reciboSimples(g);
     const devido = Number(parcela.valor) - Number(parcela.juros_dispensados || 0);
@@ -1755,7 +1860,7 @@ window.APP_CONFIG = Object.freeze({
         <div class="np-carimbo np-carimbo-${tipo}" aria-hidden="true"><strong>${rotulo}</strong>
           <span>${money(g.valor)} em ${date(g.data_pagamento)}</span><span>Recibo nº ${esc(g.numero_recibo)}</span></div>
       </div>
-      ${detalhesPagamento(g, parcela)}
+      ${detalhesPagamento(g, parcela, publico)}
     </div>`;
   }
 
@@ -1763,10 +1868,12 @@ window.APP_CONFIG = Object.freeze({
    * Comprovante(s) de pagamento. Aceita um id ou uma lista (ex.: quitação).
    * Mostra a nota promissória correspondente carimbada; sem acesso às notas, mostra o recibo simples.
    */
-  async function openReceipt(ids) {
+  async function openReceipt(ids, opts = {}) {
     ids = [].concat(ids);
     const m = U.modal({ title: 'Comprovante', size: 'xl', body: U.loadingHTML(),
-      footer: `<button type="button" class="btn" data-close>Fechar</button><button type="button" class="btn btn-primary" data-print disabled>${U.icon('printer')} Imprimir / PDF</button>` });
+      footer: `<button type="button" class="btn" data-close>Fechar</button>
+        <button type="button" class="btn" data-print disabled>${U.icon('printer')} Imprimir / PDF</button>
+        <button type="button" class="btn btn-whatsapp hidden" data-enviar-comprovante>Enviar comprovante pelo WhatsApp</button>` });
     try {
       const { data: lista, error } = await Auth.client.from('vw_pagamentos').select('*').in('id', ids).order('parcela_numero');
       if (error) throw error;
@@ -1779,16 +1886,47 @@ window.APP_CONFIG = Object.freeze({
         ? `Comprovante — recibo nº ${lista[0].numero_recibo}`
         : `Comprovantes — contrato nº ${lista[0].contrato_numero} (${lista.length} recibos)`;
       const confirmados = lista.filter((g) => g.status === 'confirmado');
-      m.body.innerHTML = (lista.length > 1
+      const podeEnviar = Auth.can('pagamentos.write') && confirmados.length > 0;
+      m.body.innerHTML = (opts.aposPagamento && podeEnviar
+        ? '<div class="alert alert-info">Pagamento registrado. Envie o comprovante ao cliente pelo botão <strong>"Enviar comprovante pelo WhatsApp"</strong>.</div>' : '')
+        + (lista.length > 1
         ? `<div class="alert alert-success">Total pago: <strong>${money(confirmados.reduce((a, g) => a + Number(g.valor), 0))}</strong>
             em ${confirmados.length} parcela(s)${confirmados.length < lista.length ? ` (${lista.length - confirmados.length} estornado(s) não somado(s))` : ''}.</div>` : '')
         + lista.map((g) => comprovanteHTML(g, notas)).join('<div class="divider"></div>');
       const btn = m.el.querySelector('[data-print]');
       btn.disabled = false;
       btn.addEventListener('click', () => U.printModal());
+      const btnEnviar = m.el.querySelector('[data-enviar-comprovante]');
+      if (podeEnviar) {
+        btnEnviar.classList.remove('hidden');
+        btnEnviar.addEventListener('click', () => enviarComprovante(confirmados, btnEnviar));
+      }
     } catch (err) {
       m.body.innerHTML = U.errorHTML(U.errorMessage(err), false);
     }
+  }
+
+  /** Gera o link público do comprovante e abre o envio pelo WhatsApp. lista = linhas confirmadas de vw_pagamentos. */
+  async function enviarComprovante(lista, btn) {
+    U.busy(btn, true, 'Gerando link...');
+    try {
+      const [link, cli] = await Promise.all([
+        U.rpc('gerar_link_comprovante', { p_pagamentos: lista.map((g) => g.id) }),
+        Auth.client.from('clientes').select('nome, telefone').eq('id', lista[0].cliente_id).single(),
+      ]);
+      if (cli.error) throw cli.error;
+      const url = `${location.origin}${location.pathname}#comprovante?t=${link.token}`;
+      U.modalWhatsApp({
+        titulo: lista.length === 1 ? `Enviar comprovante — recibo nº ${lista[0].numero_recibo}` : `Enviar comprovantes — ${lista.length} parcelas`,
+        intro: `O cliente abre o link sem precisar de login e vê a nota promissória ${lista.length === 1 ? 'da parcela' : 'de cada parcela'} com o carimbo de pago, podendo salvar em PDF.`,
+        link: url,
+        mensagem: U.mensagemComprovante({ cliente: cli.data, pagamentos: lista, link: url }),
+        telefone: cli.data.telefone,
+      });
+    } catch (err) {
+      U.toast(U.errorMessage(err), 'error', 9000);
+    }
+    U.busy(btn, false);
   }
 
   /** Quitação de todas as parcelas em aberto, com juros ou sem juros. c = linha de vw_contratos. */
@@ -1870,7 +2008,7 @@ window.APP_CONFIG = Object.freeze({
         m.close();
         U.toast(`Contrato quitado: ${money(res.total_pago)} recebidos${Number(res.juros_dispensados) ? `, ${money(res.juros_dispensados)} de juros dispensados` : ''}.`, 'success', 8000);
         if (onDone) onDone(res);
-        if ((res.pagamentos || []).length) openReceipt(res.pagamentos);
+        if ((res.pagamentos || []).length) openReceipt(res.pagamentos, { aposPagamento: true });
       } catch (err) {
         U.busy(btn, false);
         U.toast(U.errorMessage(err), 'error', 9000);
@@ -1919,7 +2057,7 @@ window.APP_CONFIG = Object.freeze({
     } catch (err) { U.toast(U.errorMessage(err), 'error', 9000); }
   }
 
-  window.Pagamentos = { openPaymentModal, openNewPayment, openReceipt, openQuitacao, reverse };
+  window.Pagamentos = { openPaymentModal, openNewPayment, openReceipt, openQuitacao, reverse, comprovanteHTML };
 
   // ------------------------------------------------------------------ página
   {
