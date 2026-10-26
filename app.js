@@ -864,13 +864,6 @@ window.APP_CONFIG = Object.freeze({
     if (backdrop) backdrop.addEventListener('click', () => document.body.classList.remove('sidebar-open'));
     document.getElementById('btn-logout').addEventListener('click', () => Auth.signOut());
 
-    if (!ctx.org.enquadramento_validado) {
-      const div = document.createElement('div');
-      div.className = 'alert alert-warning compliance-banner';
-      div.innerHTML = `<strong>Operações de crédito bloqueadas.</strong> Antes de contratar, um administrador deve registrar em
-        <a href="#configuracoes">Configurações</a> a validação jurídica do negócio e a taxa máxima de juros aplicável.`;
-      document.getElementById('banner').appendChild(div);
-    }
   }
 
   function renderFatal(message) {
@@ -1889,7 +1882,7 @@ window.APP_CONFIG = Object.freeze({
           <select id="t-sistema" name="sistema">${U.options(U.LABELS.sistema, 'PRICE')}</select></div>
         <div class="field"><label for="t-taxa">Taxa de juros (% a.m.) <span class="req">*</span></label>
           <input type="text" id="t-taxa" name="taxa" inputmode="decimal" placeholder="0,00">
-          <span class="hint">${max ? `Limite da organização: ${U.pct(max.fraction, 4)} a.m.` : 'Limite não configurado.'}</span>
+          <span class="hint">${max ? `Limite da organização: ${U.pct(max.fraction, 4)} a.m.` : 'Sem limite configurado.'}</span>
           <span class="error-msg"></span></div>
         <div class="field"><label for="t-enc">Encargos (R$)</label>
           <input type="text" id="t-enc" name="encargos" inputmode="decimal" value="0,00">
@@ -2003,7 +1996,7 @@ window.APP_CONFIG = Object.freeze({
         const s = F.schedule(p);
         current = { p, s };
         out.innerHTML = simulationHTML(s, p);
-        btnOk.disabled = !Auth.org.enquadramento_validado;
+        btnOk.disabled = false;
         out.scrollIntoView({ behavior: 'smooth', block: 'start' });
       } catch (err) {
         out.innerHTML = `<div class="alert alert-danger">${esc(err.message)}</div>`;
@@ -2029,9 +2022,7 @@ window.APP_CONFIG = Object.freeze({
     };
   }
 
-  const complianceAlert = () => (Auth.org.enquadramento_validado ? '' :
-    `<div class="alert alert-warning">A simulação está disponível, mas a contratação está <strong>bloqueada</strong> até que um
-      administrador registre a validação jurídica e a taxa máxima em Configurações.</div>`);
+  const complianceAlert = () => '';
 
   // ------------------------------------------------------------------ novo contrato
   async function openNew(preselectClientId) {
@@ -2920,8 +2911,8 @@ window.APP_CONFIG = Object.freeze({
     c.responsavel.value = o.enquadramento_responsavel || '';
     c.observacoes.value = o.enquadramento_observacoes || '';
     c.validado.checked = !!o.enquadramento_validado;
-    document.getElementById('compliance-badge').innerHTML = o.enquadramento_validado
-      ? U.badge('Operações habilitadas', 'success') : U.badge('Operações bloqueadas', 'danger');
+    document.getElementById('compliance-badge').innerHTML = o.taxa_juros_max_mensal !== null && o.taxa_juros_max_mensal !== undefined
+      ? U.badge(`Limite: ${U.pct(o.taxa_juros_max_mensal, 2)} a.m.`, 'info') : U.badge('Sem limite de taxa', 'neutral');
   }
 
   async function updateOrg(payload) {
@@ -2965,22 +2956,11 @@ window.APP_CONFIG = Object.freeze({
       if (c.taxa.value.trim() && (taxa === null || F.rateFromPercent(taxa) >= F.RATE_SCALE)) { U.fieldError(c, 'taxa', 'Taxa inválida (menor que 100).'); ok = false; }
       if (c.data.value && c.data.value > U.today()) { U.fieldError(c, 'data', 'A data não pode ser futura.'); ok = false; }
       if (validado) {
-        if (taxa === null) { U.fieldError(c, 'taxa', 'Obrigatório para habilitar operações.'); ok = false; }
-        if (!c.data.value) { U.fieldError(c, 'data', 'Obrigatório para habilitar operações.'); ok = false; }
-        if (responsavel.length < 3) { U.fieldError(c, 'responsavel', 'Obrigatório para habilitar operações.'); ok = false; }
+        if (taxa === null) { U.fieldError(c, 'taxa', 'Obrigatório para registrar a validação.'); ok = false; }
+        if (!c.data.value) { U.fieldError(c, 'data', 'Obrigatório para registrar a validação.'); ok = false; }
+        if (responsavel.length < 3) { U.fieldError(c, 'responsavel', 'Obrigatório para registrar a validação.'); ok = false; }
       }
       if (!ok) { U.focusFirstError(c); return; }
-      if (validado && !Auth.org.enquadramento_validado) {
-        const conf = await U.confirm({
-          title: 'Habilitar operações de crédito',
-          html: true,
-          message: `<p>Você declara que o enquadramento jurídico e regulatório foi validado e que a taxa máxima de
-            <strong>${esc(c.taxa.value)}% a.m.</strong> é permitida para este negócio.</p>
-            <p class="small muted">Esta declaração fica registrada na auditoria com seu usuário.</p>`,
-          confirmText: 'Declarar e habilitar',
-        });
-        if (!conf) return;
-      }
       const btn = c.querySelector('button[type=submit]');
       U.busy(btn, true, 'Salvando...');
       try {
@@ -2991,9 +2971,7 @@ window.APP_CONFIG = Object.freeze({
           enquadramento_data: c.data.value || null,
           enquadramento_observacoes: c.observacoes.value.trim() || null,
         });
-        U.toast(validado ? 'Conformidade salva. Operações habilitadas.' : 'Conformidade salva. Operações bloqueadas.', 'success');
-        const banner = document.querySelector('.compliance-banner');
-        if (banner && validado) banner.remove();
+        U.toast(taxa === null ? 'Configuração salva. Sem limite de taxa.' : 'Configuração salva. Limite de taxa aplicado aos novos contratos.', 'success');
       } catch (err) { U.toast(U.errorMessage(err), 'error'); }
       U.busy(btn, false);
     });
