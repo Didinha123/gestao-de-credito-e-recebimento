@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://*.supabase.co wss://*.supabase.co; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta name="robots" content="noindex, nofollow">
+  <title>CrediGestor</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="auth-pending">
+  <!-- ======================= LOGIN / PRIMEIRO ACESSO ======================= -->
+  <div id="auth-screen" class="auth-body hidden">
+    <div class="auth-card">
+      <div class="brand"><span class="brand-mark">₢</span><span class="brand-name">CrediGestor</span></div>
+
+      <!-- Carregando -->
+      <section id="view-loading"><div class="state"><span class="spinner"></span><div class="mt-1">Carregando...</div></div></section>
+
+      <!-- Erro de configuração -->
+      <section id="view-config" class="hidden">
+      <div class="alert alert-danger"><strong>Configuração necessária.</strong> <span id="config-error"></span></div>
+      <p class="muted small">Consulte o README.md, seção "Configurar as credenciais públicas".</p>
+      </section>
+
+      <!-- Login -->
+      <section id="view-login" class="hidden">
+      <h1>Entrar</h1>
+      <p class="muted">Acesse com seu e-mail e senha.</p>
+      <form id="form-login" novalidate>
+      <div class="field"><label for="login-email">E-mail</label>
+      <input type="email" id="login-email" name="email" autocomplete="username" required></div>
+      <div class="field"><label for="login-password">Senha</label>
+      <input type="password" id="login-password" name="password" autocomplete="current-password" required></div>
+      <button type="submit" class="btn btn-primary">Entrar</button>
+      </form>
+      <div class="auth-links">
+      <button type="button" data-view="forgot">Esqueci minha senha</button>
+      <button type="button" data-view="signup">Criar conta</button>
+      </div>
+      </section>
+
+      <!-- Cadastro -->
+      <section id="view-signup" class="hidden">
+      <h1>Criar conta</h1>
+      <p class="muted small">Após criar a conta, um administrador precisa vincular seu e-mail à organização (ou você cria uma nova organização).</p>
+      <form id="form-signup" novalidate>
+      <div class="field"><label for="su-nome">Nome completo</label>
+      <input type="text" id="su-nome" name="nome" autocomplete="name" maxlength="150" required></div>
+      <div class="field"><label for="su-email">E-mail</label>
+      <input type="email" id="su-email" name="email" autocomplete="email" required></div>
+      <div class="field"><label for="su-password">Senha</label>
+      <input type="password" id="su-password" name="password" autocomplete="new-password" required>
+      <span class="hint">Mínimo de 8 caracteres, com letras e números.</span></div>
+      <div class="field"><label for="su-password2">Confirmar senha</label>
+      <input type="password" id="su-password2" name="password2" autocomplete="new-password" required></div>
+      <button type="submit" class="btn btn-primary">Criar conta</button>
+      </form>
+      <div class="auth-links"><button type="button" data-view="login">Já tenho conta</button></div>
+      </section>
+
+      <!-- Esqueci a senha -->
+      <section id="view-forgot" class="hidden">
+      <h1>Recuperar senha</h1>
+      <p class="muted">Enviaremos um link de redefinição para o seu e-mail.</p>
+      <form id="form-forgot" novalidate>
+      <div class="field"><label for="fg-email">E-mail</label>
+      <input type="email" id="fg-email" name="email" autocomplete="email" required></div>
+      <button type="submit" class="btn btn-primary">Enviar link</button>
+      </form>
+      <div class="auth-links"><button type="button" data-view="login">Voltar ao login</button></div>
+      </section>
+
+      <!-- Redefinir senha -->
+      <section id="view-reset" class="hidden">
+      <h1>Definir nova senha</h1>
+      <form id="form-reset" novalidate>
+      <div class="field"><label for="rs-password">Nova senha</label>
+      <input type="password" id="rs-password" name="password" autocomplete="new-password" required>
+      <span class="hint">Mínimo de 8 caracteres, com letras e números.</span></div>
+      <div class="field"><label for="rs-password2">Confirmar nova senha</label>
+      <input type="password" id="rs-password2" name="password2" autocomplete="new-password" required></div>
+      <button type="submit" class="btn btn-primary">Salvar nova senha</button>
+      </form>
+      </section>
+
+      <!-- Primeiro acesso / sem organização -->
+      <section id="view-onboarding" class="hidden">
+      <h1>Primeiro acesso</h1>
+      <div id="onb-inactive" class="alert alert-danger hidden">Seu usuário está <strong>desativado</strong>. Fale com o administrador da organização.</div>
+      <p class="muted">Conectado como <strong id="onb-email"></strong>. Seu usuário ainda não está vinculado a uma organização.</p>
+      <div class="alert alert-info small">Se você foi convidado, peça ao administrador para vincular este e-mail em <em>Configurações → Usuários</em> e clique em "Verificar novamente".</div>
+      <div id="onb-create">
+      <div class="section-title">Ou crie uma nova organização</div>
+      <form id="form-org" novalidate>
+      <div class="field"><label for="org-nome">Nome da organização</label>
+      <input type="text" id="org-nome" name="nome" maxlength="150" required></div>
+      <div class="field"><label for="org-cnpj">CNPJ (opcional)</label>
+      <input type="text" id="org-cnpj" name="cnpj" inputmode="numeric" maxlength="18"></div>
+      <button type="submit" class="btn btn-primary">Criar organização</button>
+      </form>
+      </div>
+      <div class="auth-links">
+      <button type="button" id="btn-recheck">Verificar novamente</button>
+      <button type="button" id="btn-logout-onb">Sair</button>
+      </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ======================= TESTES (index.html#testes) ======================= -->
+  <main id="tests-screen" class="tests-wrap hidden">
+    <h1>Testes automatizados — motor financeiro</h1>
+    <p class="muted">Valida cálculos PRICE/SAC, arredondamento, datas, encargos, CET e imputação de pagamentos.</p>
+    <div id="summary" class="alert"></div>
+    <ul id="results" class="tests-list"></ul>
+  </main>
+
+  <!-- ======================= ÁREA AUTENTICADA ======================= -->
+  <div class="layout hidden" id="app-shell">
+    <aside id="sidebar"></aside>
+    <div class="sidebar-backdrop"></div>
+    <div class="main">
+      <header id="topbar"></header>
+      <div class="content content-banner" id="banner"></div>
+      <main class="content" id="content"></main>
+    </div>
+  </div>
+
+  <!-- ======================= TELA: dashboard ======================= -->
+  <template id="tpl-dashboard">
+    <div class="page-header">
+    <div><h1>Painel</h1><p>Visão geral da carteira, recebimentos e caixa.</p></div>
+    <div class="page-actions">
+    <button class="btn" id="btn-refresh" type="button">Atualizar</button>
+    <a class="btn btn-primary" href="#contratos?novo" id="btn-novo-contrato">Novo contrato</a>
+    </div>
+    </div>
+
+    <div id="kpis" class="grid grid-kpi"></div>
+
+    <div class="grid grid-2 mt-2">
+    <section class="card">
+    <div class="card-header"><h2>Recebimentos mensais</h2><span class="muted small">Últimos 12 meses · pagamentos confirmados</span></div>
+    <div class="card-body"><div class="chart-box"><canvas id="chart-receb" aria-label="Gráfico de recebimentos mensais" role="img"></canvas></div></div>
+    </section>
+    <section class="card">
+    <div class="card-header"><h2>Fluxo de caixa</h2><span class="muted small">Realizado × previsto</span></div>
+    <div class="card-body"><div class="chart-box"><canvas id="chart-fluxo" aria-label="Gráfico de fluxo de caixa" role="img"></canvas></div></div>
+    </section>
+    </div>
+
+    <div class="grid grid-2 mt-2">
+    <section class="card">
+    <div class="card-header"><h2>Vencimentos e atrasos</h2><a href="#parcelas">Ver parcelas</a></div>
+    <div id="list-venc"></div>
+    </section>
+    <section class="card">
+    <div class="card-header"><h2>Últimas movimentações</h2><a href="#fluxo-caixa">Ver fluxo de caixa</a></div>
+    <div id="list-mov"></div>
+    </section>
+    </div>
+  </template>
+
+  <!-- ======================= TELA: clientes ======================= -->
+  <template id="tpl-clientes">
+    <div class="page-header">
+    <div><h1>Clientes</h1><p>Cadastro, consulta e histórico de contratos. CPF exibido mascarado (LGPD).</p></div>
+    <div class="page-actions">
+    <button class="btn btn-primary" id="btn-novo" type="button"></button>
+    </div>
+    </div>
+    <section class="card" id="tbl-clientes"></section>
+  </template>
+
+  <!-- ======================= TELA: contratos ======================= -->
+  <template id="tpl-contratos">
+    <div class="page-header">
+    <div><h1>Contratos</h1><p>Simulação, contratação, acompanhamento, renegociação e cancelamento.</p></div>
+    <div class="page-actions">
+    <button class="btn btn-primary" id="btn-novo" type="button"></button>
+    </div>
+    </div>
+    <section class="card" id="tbl-contratos"></section>
+  </template>
+
+  <!-- ======================= TELA: parcelas ======================= -->
+  <template id="tpl-parcelas">
+    <div class="page-header">
+    <div><h1>Parcelas</h1><p>Controle de vencimentos, atrasos e saldos pendentes.</p></div>
+    <div class="page-actions">
+    <button class="btn" id="btn-csv" type="button"></button>
+    </div>
+    </div>
+    <div id="kpis" class="grid grid-kpi mb-2"></div>
+    <section class="card" id="tbl-parcelas"></section>
+  </template>
+
+  <!-- ======================= TELA: pagamentos ======================= -->
+  <template id="tpl-pagamentos">
+    <div class="page-header">
+    <div><h1>Pagamentos</h1><p>Recebimentos confirmados, recibos e estornos. Nenhum pagamento é apagado.</p></div>
+    <div class="page-actions">
+    <button class="btn btn-primary" id="btn-novo" type="button"></button>
+    </div>
+    </div>
+    <section class="card" id="tbl-pagamentos"></section>
+  </template>
+
+  <!-- ======================= TELA: fluxo-caixa ======================= -->
+  <template id="tpl-fluxo-caixa">
+    <div class="page-header">
+    <div><h1>Fluxo de caixa</h1><p>Entradas e saídas realizadas, previsões e saldo. Lançamentos automáticos não podem ser editados.</p></div>
+    <div class="page-actions">
+    <button class="btn btn-primary" id="btn-novo" type="button"></button>
+    </div>
+    </div>
+
+    <section class="card mb-2">
+    <form class="table-toolbar" id="form-periodo" novalidate>
+    <label for="per-de" class="small muted">De</label><input type="date" id="per-de" name="de" required>
+    <label for="per-ate" class="small muted">Até</label><input type="date" id="per-ate" name="ate" required>
+    <button type="submit" class="btn">Aplicar</button>
+    <button type="button" class="btn btn-ghost" data-range="mes">Mês atual</button>
+    <button type="button" class="btn btn-ghost" data-range="90">Próximos 90 dias</button>
+    <button type="button" class="btn btn-ghost" data-range="ano">Ano atual</button>
+    </form>
+    </section>
+
+    <div id="kpis" class="grid grid-kpi"></div>
+
+    <div class="grid grid-3 mt-2">
+    <section class="card span-2">
+    <div class="card-header"><h2>Movimentação no período</h2><span class="muted small" id="chart-legend"></span></div>
+    <div class="card-body"><div class="chart-box"><canvas id="chart-caixa" role="img" aria-label="Gráfico do fluxo de caixa"></canvas></div></div>
+    </section>
+    <section class="card">
+    <div class="card-header"><h2>Por categoria</h2><span class="muted small">realizado</span></div>
+    <div id="by-cat"></div>
+    </section>
+    </div>
+
+    <section class="card mt-2" id="tbl-mov"></section>
+  </template>
+
+  <!-- ======================= TELA: relatorios ======================= -->
+  <template id="tpl-relatorios">
+    <div class="page-header">
+    <div><h1>Relatórios</h1><p>Recebimentos, inadimplência, carteira e projeção — exportáveis em CSV.</p></div>
+    <div class="page-actions">
+    <button class="btn" id="btn-print" type="button"></button>
+    </div>
+    </div>
+
+    <div class="tabs" role="tablist">
+    <button class="tab active" role="tab" data-tab="recebimentos" aria-selected="true">Recebimentos</button>
+    <button class="tab" role="tab" data-tab="inadimplencia" aria-selected="false">Inadimplência</button>
+    <button class="tab" role="tab" data-tab="carteira" aria-selected="false">Carteira e projeção</button>
+    </div>
+
+    <!-- Recebimentos -->
+    <section data-panel="recebimentos">
+    <section class="card mb-2">
+    <form class="table-toolbar" id="form-rec" novalidate>
+    <label for="rec-de" class="small muted">De</label><input type="date" id="rec-de" name="de">
+    <label for="rec-ate" class="small muted">Até</label><input type="date" id="rec-ate" name="ate">
+    <button type="submit" class="btn btn-primary">Gerar</button>
+    <div class="spacer"></div>
+    <button type="button" class="btn" id="rec-csv"></button>
+    </form>
+    </section>
+    <div id="rec-kpis" class="grid grid-kpi"></div>
+    <div class="grid grid-3 mt-2">
+    <section class="card span-2"><div class="card-header"><h2>Recebimentos por mês</h2></div>
+    <div class="card-body"><div class="chart-box"><canvas id="chart-rec" role="img" aria-label="Recebimentos por mês"></canvas></div></div></section>
+    <section class="card"><div class="card-header"><h2>Por forma de pagamento</h2></div><div id="rec-forma"></div></section>
+    </div>
+    <section class="card mt-2"><div class="card-header"><h2>Detalhamento mensal</h2></div><div id="rec-table"></div></section>
+    </section>
+
+    <!-- Inadimplência -->
+    <section data-panel="inadimplencia" class="hidden">
+    <div id="ina-kpis" class="grid grid-kpi"></div>
+    <div class="grid grid-3 mt-2">
+    <section class="card"><div class="card-header"><h2>Atraso por faixa</h2></div>
+    <div class="card-body"><div class="chart-box"><canvas id="chart-aging" role="img" aria-label="Atraso por faixa de dias"></canvas></div></div></section>
+    <section class="card span-2"><div class="card-header"><h2>Clientes em atraso</h2><button type="button" class="btn btn-sm" id="ina-csv"></button></div>
+    <div id="ina-table"></div></section>
+    </div>
+    </section>
+
+    <!-- Carteira -->
+    <section data-panel="carteira" class="hidden">
+    <div class="grid grid-2">
+    <section class="card"><div class="card-header"><h2>Contratos por status</h2></div>
+    <div class="card-body"><div class="chart-box"><canvas id="chart-status" role="img" aria-label="Contratos por status"></canvas></div></div>
+    <div id="cart-status"></div></section>
+    <section class="card"><div class="card-header"><h2>Contratos ativos por condição</h2></div><div id="cart-sistema"></div></section>
+    </div>
+    <section class="card mt-2"><div class="card-header"><h2>Projeção de recebimentos (12 meses)</h2><button type="button" class="btn btn-sm" id="proj-csv"></button></div>
+    <div class="card-body"><div class="chart-box"><canvas id="chart-proj" role="img" aria-label="Projeção de recebimentos"></canvas></div></div>
+    <div id="proj-table"></div></section>
+    </section>
+  </template>
+
+  <!-- ======================= TELA: configuracoes ======================= -->
+  <template id="tpl-configuracoes">
+    <div class="page-header">
+    <div><h1>Configurações</h1><p>Organização, conformidade, usuários, perfil e auditoria.</p></div>
+    </div>
+
+    <div class="grid grid-2">
+    <section class="card">
+    <div class="card-header"><h2>Organização</h2></div>
+    <div class="card-body">
+    <form id="form-org" novalidate>
+    <div class="form-grid">
+    <div class="field full"><label for="o-nome">Nome <span class="req">*</span></label>
+    <input type="text" id="o-nome" name="nome" maxlength="150"><span class="error-msg"></span></div>
+    <div class="field"><label for="o-cnpj">CNPJ</label>
+    <input type="text" id="o-cnpj" name="cnpj" inputmode="numeric" maxlength="18"><span class="error-msg"></span></div>
+    <div class="field"><label for="o-alerta">Alerta de vencimento (dias)</label>
+    <input type="number" id="o-alerta" name="dias_alerta" min="1" max="60"><span class="error-msg"></span></div>
+    </div>
+    <div class="mt-2 admin-only"><button type="submit" class="btn btn-primary">Salvar organização</button></div>
+    </form>
+    </div>
+    </section>
+
+    <section class="card">
+    <div class="card-header"><h2>Conformidade jurídica</h2><span id="compliance-badge"></span></div>
+    <div class="card-body">
+    <div class="alert alert-warning small">
+    O sistema <strong>não presume</strong> que qualquer taxa seja legal. Antes de habilitar operações reais, valide com assessoria jurídica
+    o enquadramento do negócio (ex.: instituição autorizada pelo Banco Central, SCD/SEP, ESC ou outra figura), os limites de juros
+    aplicáveis, IOF, CET, contratos e exigências do CDC e da LGPD.
+    </div>
+    <form id="form-compliance" novalidate>
+    <div class="form-grid">
+    <div class="field"><label for="c-taxa">Taxa máxima de juros (% a.m.) <span class="req">*</span></label>
+    <input type="text" id="c-taxa" name="taxa" inputmode="decimal" placeholder="Ex.: 2,5">
+    <span class="hint">Contratos acima deste limite são recusados pelo banco.</span><span class="error-msg"></span></div>
+    <div class="field"><label for="c-data">Data da validação <span class="req">*</span></label>
+    <input type="date" id="c-data" name="data"><span class="error-msg"></span></div>
+    <div class="field full"><label for="c-resp">Responsável pela validação <span class="req">*</span></label>
+    <input type="text" id="c-resp" name="responsavel" maxlength="150" placeholder="Nome e registro profissional (ex.: OAB)">
+    <span class="error-msg"></span></div>
+    <div class="field full"><label for="c-obs">Fundamentação / observações</label>
+    <textarea id="c-obs" name="observacoes" maxlength="2000" placeholder="Base legal, parecer, autorização regulatória, limites considerados..."></textarea></div>
+    <div class="field full"><label class="checkbox"><input type="checkbox" name="validado">
+    <span>Declaro que o enquadramento jurídico, os limites de juros e os requisitos regulatórios foram validados e autorizo operações de crédito.</span></label></div>
+    </div>
+    <div class="mt-2 admin-only"><button type="submit" class="btn btn-primary">Salvar conformidade</button></div>
+    </form>
+    </div>
+    </section>
+    </div>
+
+    <section class="card mt-2 admin-only" id="card-users">
+    <div class="card-header"><h2>Usuários e permissões</h2></div>
+    <div class="card-body">
+    <form id="form-link" class="input-group mb-2" novalidate>
+    <input type="email" name="email" placeholder="E-mail de quem já criou a conta" aria-label="E-mail do usuário" maxlength="150">
+    <select name="papel" aria-label="Papel" style="max-width:180px"></select>
+    <button type="submit" class="btn btn-primary">Vincular</button>
+    </form>
+    <p class="small muted">Papéis: <strong>Administrador</strong> (tudo, inclusive configurações e cancelamentos) · <strong>Gestor</strong> (contratos, estornos, caixa)
+    · <strong>Operador</strong> (clientes e recebimentos) · <strong>Consulta</strong> (somente leitura, sem acesso ao CPF).</p>
+    </div>
+    <div id="users"></div>
+    </section>
+
+    <div class="grid grid-2 mt-2">
+    <section class="card">
+    <div class="card-header"><h2>Meu perfil</h2></div>
+    <div class="card-body">
+    <form id="form-profile" novalidate>
+    <div class="field"><label for="p-nome">Nome</label><input type="text" id="p-nome" name="nome" maxlength="150"><span class="error-msg"></span></div>
+    <div class="field mt-1"><label for="p-email">E-mail</label><input type="email" id="p-email" readonly></div>
+    <div class="mt-2"><button type="submit" class="btn btn-primary">Salvar perfil</button></div>
+    </form>
+    </div>
+    </section>
+    <section class="card">
+    <div class="card-header"><h2>Alterar senha</h2></div>
+    <div class="card-body">
+    <form id="form-password" novalidate>
+    <div class="field"><label for="pw-1">Nova senha</label><input type="password" id="pw-1" name="password" autocomplete="new-password">
+    <span class="hint">Mínimo de 8 caracteres, com letras e números.</span><span class="error-msg"></span></div>
+    <div class="field mt-1"><label for="pw-2">Confirmar nova senha</label><input type="password" id="pw-2" name="password2" autocomplete="new-password"><span class="error-msg"></span></div>
+    <div class="mt-2"><button type="submit" class="btn btn-primary">Alterar senha</button></div>
+    </form>
+    </div>
+    </section>
+    </div>
+
+    <section class="card mt-2 hidden" id="card-audit">
+    <div class="card-header"><h2>Auditoria</h2><span class="muted small">Registro imutável de alterações e acessos a dados pessoais</span></div>
+    <div id="tbl-audit"></div>
+    </section>
+  </template>
+
+  <div id="toast-root" class="toast-root" aria-live="polite"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
