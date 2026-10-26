@@ -561,13 +561,20 @@ window.APP_CONFIG = Object.freeze({
       </div>`;
       dlg.querySelector('h2').textContent = title || '';
       document.body.appendChild(dlg);
-      const close = () => { if (dlg.open) dlg.close(); };
-      dlg.addEventListener('click', (e) => { if (e.target.closest('[data-close]')) close(); });
-      dlg.addEventListener('close', () => {
+      // A limpeza não depende só do evento "close" (alguns navegadores embutidos não o disparam).
+      let finalizado = false;
+      const finalizar = () => {
+        if (finalizado) return;
+        finalizado = true;
         dlg.remove();
         document.body.classList.remove('printing-modal');
         if (onClose) onClose();
-      });
+      };
+      const close = () => { if (dlg.open) dlg.close(); finalizar(); };
+      dlg.addEventListener('click', (e) => { if (e.target.closest('[data-close]')) close(); });
+      dlg.addEventListener('cancel', (e) => { e.preventDefault(); close(); }); // tecla Esc
+      dlg.addEventListener('close', finalizar);
+      dlg._fechar = close;
       dlg.showModal();
       return { el: dlg, body: dlg.querySelector('.modal-body'), footer: dlg.querySelector('.modal-footer'), close };
     },
@@ -1146,7 +1153,7 @@ window.APP_CONFIG = Object.freeze({
     const { id, params } = parseHash();
     const page = pages[id];
     App.params = params;
-    document.querySelectorAll('dialog[open]').forEach((d) => d.close());
+    document.querySelectorAll('dialog').forEach((d) => (d._fechar ? d._fechar() : d.remove()));
     U.charts.forEach((c) => c.destroy());
     U.charts.clear();
     document.body.dataset.page = id;
@@ -1653,9 +1660,19 @@ window.APP_CONFIG = Object.freeze({
             <select id="sel-parcela" name="parcela" disabled><option value="">Selecione o contrato</option></select>
             <span class="error-msg"></span></div>
         </div></form>`,
-      footer: `<button type="button" class="btn" data-close>Cancelar</button><button type="submit" form="form-sel" class="btn btn-primary">Continuar</button>`,
+      footer: `<button type="button" class="btn" data-close>Cancelar</button>
+        <button type="button" class="btn btn-success" data-quitar disabled>Quitar contrato inteiro</button>
+        <button type="submit" form="form-sel" class="btn btn-primary">Receber parcela</button>`,
     });
     const form = m.el.querySelector('form');
+    let contratos = [];
+    const btnQuitar = m.el.querySelector('[data-quitar]');
+    btnQuitar.addEventListener('click', () => {
+      const c = contratos.find((x) => x.id === form.contrato.value);
+      if (!c) return;
+      m.close();
+      openQuitacao(c, onDone);
+    });
     const selC = form.contrato;
     const selP = form.parcela;
     let parcelas = [];
@@ -1670,6 +1687,8 @@ window.APP_CONFIG = Object.freeze({
         query = /^\d+$/.test(q) ? query.eq('numero', Number(q)) : query.ilike('cliente_nome', `%${q}%`);
         const { data, error } = await query;
         if (error) throw error;
+        contratos = data;
+        btnQuitar.disabled = true;
         selC.innerHTML = `<option value="">${data.length ? 'Selecione o contrato' : 'Nenhum contrato ativo encontrado'}</option>` +
           data.map((c) => `<option value="${esc(c.id)}">Nº ${esc(c.numero)} — ${esc(c.cliente_nome)} — saldo ${money(c.saldo_aberto)}</option>`).join('');
       } catch (err) {
@@ -1680,6 +1699,7 @@ window.APP_CONFIG = Object.freeze({
     m.el.querySelector('#sel-busca').addEventListener('input', (e) => search(e.target.value));
 
     selC.addEventListener('change', async () => {
+      btnQuitar.disabled = !selC.value;
       selP.disabled = true;
       selP.innerHTML = '<option value="">Carregando...</option>';
       if (!selC.value) { selP.innerHTML = '<option value="">Selecione o contrato</option>'; return; }
@@ -1709,16 +1729,159 @@ window.APP_CONFIG = Object.freeze({
     });
   }
 
-  /** Recibo imprimível. */
-  async function openReceipt(id) {
-    const m = U.modal({ title: 'Recibo', size: 'lg', body: U.loadingHTML(),
-      footer: `<button type="button" class="btn" data-close>Fechar</button><button type="button" class="btn btn-primary" data-print disabled>${U.icon('printer')} Imprimir</button>` });
+  /** Detalhes do pagamento exibidos abaixo da nota promissória. */
+  function detalhesPagamento(g, parcela) {
+    const dispensa = parcela && Number(parcela.juros_dispensados) > 0;
+    return `<dl class="dl small mt-1">
+      <dt>Recibo</dt><dd>nº ${esc(g.numero_recibo)} · parcela ${g.parcela_numero}/${g.qtd_parcelas} do contrato nº ${esc(g.contrato_numero)}</dd>
+      <dt>Valor pago</dt><dd><strong>${money(g.valor)}</strong> em ${date(g.data_pagamento)} · ${esc(U.LABELS.forma[g.forma])}</dd>
+      <dt>Composição</dt><dd>Principal ${money(g.valor_principal)} · Juros ${money(g.valor_juros)} · Encargos ${money(g.valor_encargos)}</dd>
+      ${dispensa ? `<dt>Juros dispensados</dt><dd>${money(parcela.juros_dispensados)} (quitação sem juros)</dd>` : ''}
+      <dt>Registrado por</dt><dd>${esc(g.registrado_por_nome || '—')} em ${esc(U.datetime(g.created_at))}</dd>
+      ${g.observacoes ? `<dt>Observações</dt><dd>${esc(g.observacoes)}</dd>` : ''}
+      ${g.status === 'estornado' ? `<dt>Estorno</dt><dd class="text-danger">${esc(U.datetime(g.estornado_em))} por ${esc(g.estornado_por_nome || '—')}: ${esc(g.estorno_motivo)}</dd>` : ''}
+    </dl>`;
+  }
+
+  /** Comprovante: a nota promissória da parcela com carimbo de pagamento. */
+  function comprovanteHTML(g, notas) {
+    const parcela = notas && (notas.parcelas || []).find((p) => p.numero === g.parcela_numero);
+    if (!parcela) return reciboSimples(g);
+    const devido = Number(parcela.valor) - Number(parcela.juros_dispensados || 0);
+    const [rotulo, tipo] = g.status === 'estornado' ? ['ESTORNADO', 'estornado']
+      : Number(g.valor) >= devido - 0.005 ? ['PAGO', 'pago'] : ['PAGO PARCIAL', 'parcial'];
+    return `<div class="comprovante">
+      <div class="np-pago-wrap">${U.notaPromissoria(notas, parcela)}
+        <div class="np-carimbo np-carimbo-${tipo}" aria-hidden="true"><strong>${rotulo}</strong>
+          <span>${money(g.valor)} em ${date(g.data_pagamento)}</span><span>Recibo nº ${esc(g.numero_recibo)}</span></div>
+      </div>
+      ${detalhesPagamento(g, parcela)}
+    </div>`;
+  }
+
+  /**
+   * Comprovante(s) de pagamento. Aceita um id ou uma lista (ex.: quitação).
+   * Mostra a nota promissória correspondente carimbada; sem acesso às notas, mostra o recibo simples.
+   */
+  async function openReceipt(ids) {
+    ids = [].concat(ids);
+    const m = U.modal({ title: 'Comprovante', size: 'xl', body: U.loadingHTML(),
+      footer: `<button type="button" class="btn" data-close>Fechar</button><button type="button" class="btn btn-primary" data-print disabled>${U.icon('printer')} Imprimir / PDF</button>` });
     try {
-      const { data: g, error } = await Auth.client.from('vw_pagamentos').select('*').eq('id', id).single();
+      const { data: lista, error } = await Auth.client.from('vw_pagamentos').select('*').in('id', ids).order('parcela_numero');
       if (error) throw error;
-      const org = Auth.org;
-      m.el.querySelector('h2').textContent = `Recibo nº ${g.numero_recibo}`;
-      m.body.innerHTML = `<div class="receipt ${g.status === 'estornado' ? 'estornado' : ''}">
+      if (!lista.length) throw new Error('Pagamento não encontrado.');
+      let notas = null;
+      if (Auth.can('pagamentos.write')) {
+        try { notas = await U.rpc('notas_promissorias', { p_contrato_id: lista[0].contrato_id }); } catch (_) { notas = null; }
+      }
+      m.el.querySelector('h2').textContent = lista.length === 1
+        ? `Comprovante — recibo nº ${lista[0].numero_recibo}`
+        : `Comprovantes — contrato nº ${lista[0].contrato_numero} (${lista.length} recibos)`;
+      const confirmados = lista.filter((g) => g.status === 'confirmado');
+      m.body.innerHTML = (lista.length > 1
+        ? `<div class="alert alert-success">Total pago: <strong>${money(confirmados.reduce((a, g) => a + Number(g.valor), 0))}</strong>
+            em ${confirmados.length} parcela(s)${confirmados.length < lista.length ? ` (${lista.length - confirmados.length} estornado(s) não somado(s))` : ''}.</div>` : '')
+        + lista.map((g) => comprovanteHTML(g, notas)).join('<div class="divider"></div>');
+      const btn = m.el.querySelector('[data-print]');
+      btn.disabled = false;
+      btn.addEventListener('click', () => U.printModal());
+    } catch (err) {
+      m.body.innerHTML = U.errorHTML(U.errorMessage(err), false);
+    }
+  }
+
+  /** Quitação de todas as parcelas em aberto, com juros ou sem juros. c = linha de vw_contratos. */
+  async function openQuitacao(c, onDone) {
+    const m = U.modal({ title: `Quitar contrato nº ${c.numero}`, size: 'lg', body: U.loadingHTML() });
+    let parcelas;
+    try {
+      const { data, error } = await Auth.client.from('vw_parcelas').select('*').eq('contrato_id', c.id)
+        .in('status', ['aberta', 'parcial']).order('numero');
+      if (error) throw error;
+      parcelas = data;
+    } catch (err) {
+      m.body.innerHTML = U.errorHTML(U.errorMessage(err), false);
+      return;
+    }
+    if (!parcelas.length) { m.body.innerHTML = U.emptyHTML('Nenhuma parcela em aberto', 'Este contrato não tem saldo a quitar.'); return; }
+    const soma = (fn) => parcelas.reduce((a, p) => a + fn(p), 0n);
+    const saldo = soma((p) => F.toCents(p.saldo));
+    const juros = soma((p) => F.toCents(p.valor_juros) - F.toCents(p.pago_juros));
+    const semJuros = saldo - juros;
+    const podeSemJuros = Auth.can('contratos.write');
+    m.body.innerHTML = `
+      <p><strong>${esc(c.cliente_nome)}</strong> · ${parcelas.length} parcela(s) em aberto.
+        Cada parcela recebe o seu próprio recibo e a nota promissória correspondente é carimbada como paga.</p>
+      <form id="form-quitar" novalidate>
+        <div class="quit-opcoes">
+          <label class="quit-opcao"><input type="radio" name="modo" value="com_juros" checked>
+            <div><strong>Com juros</strong><div class="quit-valor">${money(saldo)}</div>
+            <span class="small muted">Paga o saldo total das parcelas em aberto.</span></div></label>
+          <label class="quit-opcao ${podeSemJuros ? '' : 'quit-desabilitada'}"><input type="radio" name="modo" value="sem_juros" ${podeSemJuros ? '' : 'disabled'}>
+            <div><strong>Sem juros</strong><div class="quit-valor">${money(semJuros)}</div>
+            <span class="small muted">Dispensa ${money(juros)} de juros ainda não pagos.${podeSemJuros ? '' : ' Somente administrador ou gestor.'}</span></div></label>
+        </div>
+        <div class="form-grid mt-2">
+          <div class="field"><label for="q-data">Data do pagamento <span class="req">*</span></label>
+            <input type="date" id="q-data" name="data" max="${U.today()}" value="${U.today()}"><span class="error-msg"></span></div>
+          <div class="field"><label for="q-forma">Forma de pagamento <span class="req">*</span></label>
+            <select id="q-forma" name="forma">${U.options(U.LABELS.forma, 'pix')}</select></div>
+          <div class="field full"><label for="q-obs">Observações</label>
+            <input type="text" id="q-obs" name="observacoes" maxlength="300" placeholder="Ex.: acordo de quitação antecipada"></div>
+        </div>
+      </form>
+      <div class="section-title">Parcelas que serão quitadas</div>
+      <div class="table-wrap"><table class="table table-compact responsive"><thead><tr>
+        <th>Nº</th><th>Vencimento</th><th class="num">Saldo</th><th class="num">Juros em aberto</th></tr></thead><tbody>
+        ${parcelas.map((p) => `<tr><td data-label="Nº">${p.numero}/${p.qtd_parcelas}</td><td data-label="Vencimento">${date(p.vencimento)}</td>
+          <td data-label="Saldo" class="num">${money(p.saldo)}</td>
+          <td data-label="Juros em aberto" class="num">${money(F.toCents(p.valor_juros) - F.toCents(p.pago_juros))}</td></tr>`).join('')}
+      </tbody></table></div>`;
+    const footer = document.createElement('div');
+    footer.className = 'modal-footer';
+    footer.innerHTML = `<button type="button" class="btn" data-close>Cancelar</button>
+      <button type="submit" form="form-quitar" class="btn btn-success">Confirmar quitação</button>`;
+    m.el.querySelector('.modal-inner').appendChild(footer);
+    const form = m.el.querySelector('form');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      U.clearErrors(form);
+      if (!form.data.value || form.data.value > U.today()) { U.fieldError(form, 'data', 'Informe uma data até hoje.'); return; }
+      const modo = form.modo.value;
+      const valor = modo === 'sem_juros' ? semJuros : saldo;
+      const ok = await U.confirm({
+        title: 'Confirmar quitação',
+        html: true,
+        message: `<p>Registrar o recebimento de <strong>${money(valor)}</strong> (${modo === 'sem_juros' ? 'sem juros' : 'com juros'})
+          em ${parcelas.length} parcela(s) do contrato nº ${esc(c.numero)}, em ${date(form.data.value)}?</p>
+          ${modo === 'sem_juros' ? `<p class="small muted">Serão dispensados ${money(juros)} de juros. Se algum pagamento for estornado, os juros daquela parcela voltam a ser cobrados.</p>` : ''}`,
+        confirmText: 'Quitar',
+      });
+      if (!ok) return;
+      const btn = footer.querySelector('button[type=submit]');
+      U.busy(btn, true, 'Registrando...');
+      try {
+        const res = await U.rpc('quitar_contrato', {
+          p_contrato_id: c.id, p_modo: modo, p_data_pagamento: form.data.value, p_forma: form.forma.value,
+          p_observacoes: form.observacoes.value.trim() || null,
+        });
+        m.close();
+        U.toast(`Contrato quitado: ${money(res.total_pago)} recebidos${Number(res.juros_dispensados) ? `, ${money(res.juros_dispensados)} de juros dispensados` : ''}.`, 'success', 8000);
+        if (onDone) onDone(res);
+        if ((res.pagamentos || []).length) openReceipt(res.pagamentos);
+      } catch (err) {
+        U.busy(btn, false);
+        U.toast(U.errorMessage(err), 'error', 9000);
+      }
+    });
+  }
+
+  /** Recibo simples (usado quando as notas promissórias não estão disponíveis). */
+  function reciboSimples(g) {
+    const org = Auth.org;
+    return `<div class="receipt ${g.status === 'estornado' ? 'estornado' : ''}">
         <div class="receipt-head">
           <div><strong>${esc(org.nome)}</strong>${org.cnpj ? `<div class="small muted">CNPJ ${esc(U.formatCNPJ(org.cnpj))}</div>` : ''}</div>
           <div class="right"><strong>RECIBO Nº ${esc(g.numero_recibo)}</strong><div class="small muted">Emitido em ${esc(U.datetime(new Date()))}</div></div>
@@ -1736,12 +1899,6 @@ window.APP_CONFIG = Object.freeze({
         </dl>
         <div class="receipt-sign">${esc(org.nome)}</div>
       </div>`;
-      const btn = m.el.querySelector('[data-print]');
-      btn.disabled = false;
-      btn.addEventListener('click', () => U.printModal());
-    } catch (err) {
-      m.body.innerHTML = U.errorHTML(U.errorMessage(err), false);
-    }
   }
 
   async function reverse(row, onDone) {
@@ -1762,7 +1919,7 @@ window.APP_CONFIG = Object.freeze({
     } catch (err) { U.toast(U.errorMessage(err), 'error', 9000); }
   }
 
-  window.Pagamentos = { openPaymentModal, openNewPayment, openReceipt, reverse };
+  window.Pagamentos = { openPaymentModal, openNewPayment, openReceipt, openQuitacao, reverse };
 
   // ------------------------------------------------------------------ página
   {
@@ -2522,6 +2679,33 @@ window.APP_CONFIG = Object.freeze({
     }
   }
 
+  /** Assinatura do cliente: imagem e evidências (data/hora, IP, navegador). */
+  async function openAssinatura(c) {
+    const m = U.modal({ title: `Assinatura — contrato nº ${c.numero}`, size: 'lg', body: U.loadingHTML(),
+      footer: '<button type="button" class="btn" data-close>Fechar</button>' });
+    try {
+      const { data, error } = await Auth.client.from('assinaturas')
+        .select('status, assinado_em, nome_assinante, assinatura_imagem, ip, user_agent, tentativas, created_at')
+        .eq('contrato_id', c.id).eq('status', 'assinado').order('assinado_em', { ascending: false }).limit(1);
+      if (error) throw error;
+      const a = data[0];
+      if (!a) { m.body.innerHTML = U.emptyHTML('Contrato ainda não assinado'); return; }
+      m.body.innerHTML = `
+        <div class="assinatura-box">${a.assinatura_imagem && /^data:image\/png;base64,/.test(a.assinatura_imagem)
+          ? `<img src="${esc(a.assinatura_imagem)}" alt="Assinatura de ${esc(a.nome_assinante)}">` : U.emptyHTML('Imagem indisponível')}</div>
+        <dl class="dl mt-2">
+          <dt>Assinado por</dt><dd>${esc(a.nome_assinante)} (CPF conferido com o cadastro)</dd>
+          <dt>Data e hora</dt><dd>${esc(U.datetime(a.assinado_em))}</dd>
+          <dt>Link enviado em</dt><dd>${esc(U.datetime(a.created_at))}</dd>
+          <dt>Endereço IP</dt><dd class="mono">${esc(a.ip || 'não registrado')}</dd>
+          <dt>Navegador</dt><dd class="small">${esc(a.user_agent || 'não registrado')}</dd>
+          <dt>Tentativas de CPF incorretas</dt><dd>${esc(a.tentativas)}</dd>
+        </dl>`;
+    } catch (err) {
+      m.body.innerHTML = U.errorHTML(U.errorMessage(err), false);
+    }
+  }
+
   /** Notas promissórias do contrato (modelo tradicional), com assinatura quando houver. */
   async function openNotas(c) {
     const m = U.modal({ title: `Notas promissórias — contrato nº ${c.numero}`, size: 'xl', body: U.loadingHTML(),
@@ -2604,11 +2788,17 @@ window.APP_CONFIG = Object.freeze({
       ${podeCancelar ? '<button type="button" class="btn btn-danger" data-cancel>Cancelar contrato</button>' : ''}
       ${Auth.can('contratos.write') && c.status === 'ativo' ? '<button type="button" class="btn" data-reneg>Renegociar</button>' : ''}
       ${Auth.can('pagamentos.write') && c.status !== 'cancelado' ? '<button type="button" class="btn" data-notas>Notas promissórias</button>' : ''}
+      ${assinatura && assinatura.status === 'assinado' ? '<button type="button" class="btn" data-ver-assinatura>Ver assinatura</button>' : ''}
+      ${canPay && Number(c.saldo_aberto) > 0 ? '<button type="button" class="btn btn-success" data-quitar>Quitar contrato</button>' : ''}
       <button type="button" class="btn" data-print>${U.icon('printer')} Imprimir</button>
       ${pendente && Auth.can('contratos.write') ? '<button type="button" class="btn btn-whatsapp" data-enviar>Enviar para assinatura</button>' : ''}
       <button type="button" class="btn btn-primary" data-close>Fechar</button>`;
     const notas = footer.querySelector('[data-notas]');
     if (notas) notas.addEventListener('click', () => openNotas(c));
+    const verAss = footer.querySelector('[data-ver-assinatura]');
+    if (verAss) verAss.addEventListener('click', () => openAssinatura(c));
+    const quitar = footer.querySelector('[data-quitar]');
+    if (quitar) quitar.addEventListener('click', () => Pagamentos.openQuitacao(c, () => { refresh(); table.reload(); }));
     const enviar = footer.querySelector('[data-enviar]');
     if (enviar) enviar.addEventListener('click', () => openEnvio(c, refresh));
 
