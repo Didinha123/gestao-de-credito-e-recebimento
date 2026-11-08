@@ -2768,7 +2768,7 @@ window.APP_CONFIG = Object.freeze({
     if (Auth.can('clientes.anonimizar') && r.status === 'arquivado' && !r.anonimizado_em) {
       b.push(`<button class="btn btn-sm btn-danger" data-action="anonymize">Anonimizar</button>`);
     }
-    if (Auth.can('clientes.excluir') && !r.anonimizado_em) {
+    if (Auth.can('clientes.excluir')) {
       b.push(`<button class="btn btn-sm btn-danger" data-action="delete">Excluir</button>`);
     }
     return `<div class="btn-group">${b.join('')}</div>`;
@@ -2952,21 +2952,11 @@ window.APP_CONFIG = Object.freeze({
   }
 
   async function excluir(row) {
-    // Clientes com contrato não podem ser excluídos (registros financeiros são mantidos).
-    const { count, error: errCount } = await Auth.client.from('contratos')
-      .select('id', { count: 'exact', head: true }).eq('cliente_id', row.id);
-    if (errCount) { U.toast(U.errorMessage(errCount), 'error'); return; }
-    if (count > 0) {
-      U.modal({
-        title: 'Não é possível excluir',
-        body: `<p><strong>${esc(row.nome)}</strong> tem ${count} contrato(s). Contratos, parcelas e pagamentos são registros
-          financeiros e não podem ser apagados.</p>
-          <p>Para tirar o cliente da lista, use <strong>Arquivar</strong>. Se ele pediu a eliminação dos dados pessoais (LGPD),
-          arquive e depois use <strong>Anonimizar</strong>.</p>`,
-        footer: '<button type="button" class="btn btn-primary" data-close>Entendi</button>',
-      });
-      return;
-    }
+    // Cliente com empréstimos: exclusão total (cliente + contratos + parcelas + pagamentos + caixa).
+    let resumo;
+    try { resumo = await U.rpc('resumo_exclusao_cliente', { p_cliente_id: row.id }); }
+    catch (err) { U.toast(U.errorMessage(err), 'error', 9000); return; }
+    if (Number(resumo.contratos) > 0) { excluirTotal(row, resumo); return; }
     const ok = await U.confirm({
       title: 'Excluir cliente',
       html: true,
@@ -2989,6 +2979,60 @@ window.APP_CONFIG = Object.freeze({
       U.toast(`Cliente "${row.nome}" excluído.`, 'success');
       table.reload();
     } catch (err) { U.toast(U.errorMessage(err), 'error', 9000); }
+  }
+
+  /** Exclusão total: pede o nome do cliente digitado como confirmação. */
+  function excluirTotal(row, r) {
+    const abertos = Number(r.contratos_abertos);
+    const m = U.modal({
+      title: 'Excluir cliente e todos os empréstimos',
+      body: `<div class="alert alert-danger"><strong>Atenção: isto apaga tudo de ${esc(row.nome)} e não dá para desfazer.</strong></div>
+        <ul class="lista-exclusao">
+          <li><strong>${r.contratos}</strong> contrato(s)${abertos ? ` — <strong>${abertos} em aberto</strong>` : ''}, com todas as parcelas</li>
+          <li><strong>${r.pagamentos}</strong> pagamento(s) e recibo(s) — ${U.money(r.total_recebido)} recebidos</li>
+          ${Number(r.saldo_aberto) > 0 ? `<li>Saldo ainda a receber: <strong>${U.money(r.saldo_aberto)}</strong> (deixa de ser cobrado)</li>` : ''}
+          <li>Lançamentos de caixa desses contratos (os valores somem do caixa e dos relatórios)</li>
+          <li>Assinaturas, notas promissórias, links, fotos, documentos e o histórico de auditoria do cliente</li>
+        </ul>
+        <p class="small muted">Fica só um registro na auditoria dizendo quem excluiu, quando e as quantidades (sem CPF).
+          Se quiser apenas tirar o cliente da lista, use <strong>Arquivar</strong>.</p>
+        <form id="form-excluir-total" novalidate>
+          <div class="field"><label for="ex-nome">Para confirmar, digite o nome do cliente: <strong>${esc(row.nome)}</strong></label>
+            <input type="text" id="ex-nome" name="nome" autocomplete="off"><span class="error-msg"></span></div>
+          <div class="field mt-1"><label for="ex-motivo">Motivo (opcional)</label>
+            <input type="text" id="ex-motivo" name="motivo" maxlength="300" placeholder="Ex.: pedido do cliente"></div>
+        </form>`,
+      footer: `<button type="button" class="btn" data-close>Cancelar</button>
+        <button type="submit" form="form-excluir-total" class="btn btn-danger" disabled>Excluir tudo definitivamente</button>`,
+    });
+    const form = m.el.querySelector('form');
+    const btn = m.el.querySelector('button[type=submit]');
+    const normal = (s) => s.trim().replace(/\s+/g, ' ').toLowerCase();
+    form.nome.addEventListener('input', () => { btn.disabled = normal(form.nome.value) !== normal(row.nome); });
+    form.nome.focus();
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (btn.disabled) return;
+      U.busy(btn, true, 'Excluindo...');
+      try {
+        const dc = await U.rpc('documentos_cliente', { p_cliente_id: row.id });
+        const paths = (dc.documentos || []).map((d) => d.path);
+        if (paths.length) {
+          const { error } = await Auth.client.storage.from('documentos').remove(paths);
+          if (error) throw new Error('Não foi possível apagar os documentos do cliente: ' + error.message);
+        }
+        const res = await U.rpc('excluir_cliente_total', {
+          p_cliente_id: row.id, p_confirmacao: form.nome.value, p_motivo: form.motivo.value.trim() || null,
+        });
+        m.close();
+        U.toast(`"${row.nome}" excluído com ${res.contratos} contrato(s) e ${res.pagamentos} pagamento(s).`, 'success', 9000);
+        U.nomesCache = null;
+        table.reload();
+      } catch (err) {
+        U.busy(btn, false);
+        U.toast(U.errorMessage(err), 'error', 9000);
+      }
+    });
   }
 
   /** Gera um link de cadastro (uso único) e oferece o envio pelo WhatsApp. */
