@@ -489,3 +489,5 @@ pre.json { background: var(--surface-2); border: 1px solid var(--border); border
 /* ----------------------------------------------------------------- simulação editável */
 .sim-edit { border-color: var(--primary); background: var(--primary-50); }
 .sim-input { height: 34px !important; font-size: 1.05rem; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: .2rem; }
+
+.lista-exclusao { margin: .5rem 0 .75rem 1.1rem; padding: 0; line-height: 1.6; }
