@@ -472,3 +472,19 @@ pre.json { background: var(--surface-2); border: 1px solid var(--border); border
 /* ----------------------------------------------------------------- assinatura do cliente */
 .assinatura-box { border: 1px solid var(--border); border-radius: var(--radius); background: #fff; padding: 1rem; text-align: center; }
 .assinatura-box img { max-width: 100%; max-height: 220px; }
+
+/* ----------------------------------------------------------------- autocadastro e documentos */
+.doc-inputs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem 1.25rem; }
+.doc-input input[type=file] { width: 100%; padding: .5rem; border: 1px dashed var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+.doc-previews { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .35rem; }
+.doc-previews img { width: 72px; height: 72px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); }
+.doc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .75rem; }
+.doc-card { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); display: flex; flex-direction: column; }
+.doc-card .doc-thumb { height: 190px; background: var(--surface-2); display: grid; place-items: center; }
+.doc-card .doc-thumb img { max-width: 100%; max-height: 190px; object-fit: contain; }
+.doc-card .doc-info { padding: .55rem .7rem; font-size: 12.5px; display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+@media (max-width: 640px) { .doc-inputs { grid-template-columns: 1fr; } }
+
+/* ----------------------------------------------------------------- simulação editável */
+.sim-edit { border-color: var(--primary); background: var(--primary-50); }
+.sim-input { height: 34px !important; font-size: 1.05rem; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: .2rem; }
