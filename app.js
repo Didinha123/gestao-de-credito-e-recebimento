@@ -353,7 +353,7 @@ window.APP_CONFIG = Object.freeze({
     movSituacao: { realizado: ['Realizado', 'success'], previsto: ['Previsto', 'info'], cancelado: ['Cancelado', 'neutral'] },
     forma: { pix: 'PIX', dinheiro: 'Dinheiro', transferencia: 'Transferência', boleto: 'Boleto', cartao: 'Cartão', outro: 'Outro' },
     frequencia: { mensal: 'Mensal', quinzenal: 'Quinzenal', semanal: 'Semanal' },
-    sistema: { PRICE: 'Price (parcelas fixas)', SAC: 'SAC (amortização constante)' },
+    sistema: { SIMPLES: 'Juros simples (parcela fixa sobre o valor emprestado)', PRICE: 'Price (juros sobre o saldo)', SAC: 'SAC (parcelas decrescentes)' },
     categoria: {
       liberacao_credito: 'Liberação de crédito', recebimento_principal: 'Recebimento de principal',
       recebimento_juros: 'Recebimento de juros', recebimento_encargos: 'Recebimento de encargos',
@@ -792,7 +792,8 @@ window.APP_CONFIG = Object.freeze({
         return `Olá, ${nome}! Confirmamos o recebimento dos juros.\n\n` +
           `• Contrato nº ${g.contrato_numero} — parcela ${g.parcela_numero}/${g.qtd_parcelas}\n` +
           `• Juros pagos: ${U.money(g.valor)}\n• Data: ${U.date(g.data_pagamento)}\n` +
-          `• Novo vencimento da parcela: ${U.date(g.parcela_vencimento)} (as parcelas seguintes também foram prorrogadas)\n\n` +
+          (g.vencimento_anterior ? `• Vencimento anterior: ${U.date(g.vencimento_anterior)}\n` : '') +
+          `• Novo vencimento da parcela: ${U.date(g.vencimento_novo || g.parcela_vencimento)} (as parcelas seguintes também foram prorrogadas)\n\n` +
           `Seu comprovante:\n${link}\n\nObrigado!`;
       }
       const corpo = pagamentos.length === 1
@@ -1248,6 +1249,32 @@ window.APP_CONFIG = Object.freeze({
     return { blob, ext: 'jpg', mime: 'image/jpeg' };
   }
 
+  /**
+   * Link fixo (index.html#cadastro?f=...): abre uma sessão de cadastro própria para o visitante.
+   * A sessão fica guardada na aba do navegador, então recarregar a página não cria outra.
+   */
+  async function telaCadastroFixo(link) {
+    const chave = `cadastro-fixo-${link}`;
+    let token = sessionStorage.getItem(chave);
+    if (token && !Auth.problem) {
+      try { await U.rpc('obter_convite', { p_token: token }); } catch (_) { token = null; }
+    }
+    if (!token && !Auth.problem) {
+      try {
+        token = (await U.rpc('iniciar_cadastro_fixo', { p_link: link })).token;
+        sessionStorage.setItem(chave, token);
+      } catch (err) {
+        ['auth-screen', 'tests-screen'].forEach((id) => { const e = document.getElementById(id); if (e) e.remove(); });
+        const root = document.getElementById('public-screen');
+        root.classList.remove('hidden');
+        document.body.classList.remove('auth-pending');
+        root.innerHTML = `<div class="public-wrap"><div class="card">${U.errorHTML(U.errorMessage(err), false)}</div></div>`;
+        return;
+      }
+    }
+    await telaCadastro(token || '');
+  }
+
   async function telaCadastro(token) {
     ['auth-screen', 'tests-screen'].forEach((id) => { const e = document.getElementById(id); if (e) e.remove(); });
     const root = document.getElementById('public-screen');
@@ -1542,7 +1569,9 @@ window.APP_CONFIG = Object.freeze({
         return;
       }
       if (hash.startsWith('#cadastro')) { // página pública de autocadastro (sem login)
-        await telaCadastro(new URLSearchParams(hash.split('?')[1] || '').get('t') || '');
+        const q = new URLSearchParams(hash.split('?')[1] || '');
+        if (q.get('f')) await telaCadastroFixo(q.get('f'));
+        else await telaCadastro(q.get('t') || '');
         return;
       }
       if (hash.startsWith('#comprovante')) { // página pública do comprovante (sem login)
@@ -1595,7 +1624,7 @@ window.APP_CONFIG = Object.freeze({
 
   const RATE_SCALE = 100000000n; // 1e8
   const FREQ_DIAS = { mensal: 30, quinzenal: 15, semanal: 7 };
-  const SISTEMAS = ['PRICE', 'SAC'];
+  const SISTEMAS = ['PRICE', 'SAC', 'SIMPLES'];
 
   /** Divisão de inteiros não negativos com arredondamento half-up. */
   function divRound(num, den) {
@@ -1715,7 +1744,8 @@ window.APP_CONFIG = Object.freeze({
     let saldo = P;
     for (let k = 1; k <= n; k++) {
       const K = BigInt(k);
-      const juros = divRound(saldo * r, RATE_SCALE);
+      // Juros simples: sempre sobre o valor emprestado; Price/SAC: sobre o saldo.
+      const juros = divRound((p.sistema === 'SIMPLES' ? P : saldo) * r, RATE_SCALE);
       let amort;
       if (k === n) amort = saldo;
       else if (p.sistema === 'PRICE') {
@@ -1768,6 +1798,7 @@ window.APP_CONFIG = Object.freeze({
    * Retorna { taxaMensalPct, parcelaFixa } — parcelaFixa é a parte sem encargos, para enviar ao banco.
    */
   function taxaParaParcela(p, valorParcela) {
+    if (p.sistema === 'SIMPLES') return taxaSimplesParaParcela(p, valorParcela);
     const P = toCents(p.principal);
     const n = Number(p.parcelas);
     const N = BigInt(n);
@@ -1785,6 +1816,27 @@ window.APP_CONFIG = Object.freeze({
     }
     const R = lo > 0n && alvo - pmtDe(lo - 1n) < pmtDe(lo) - alvo ? lo - 1n : lo;
     return { taxaMensalPct: formatScaled(R, 6), parcelaFixa: centsToString(alvo) };
+  }
+
+  /**
+   * Juros simples: taxa mensal (% com até 6 casas) para que a 1ª parcela fique no valor desejado.
+   * Parcela = principal/n + principal × taxa do período (+ encargos/n). Não usa parcela fixa.
+   */
+  function taxaSimplesParaParcela(p, valorParcela) {
+    const P = toCents(p.principal);
+    const N = BigInt(Number(p.parcelas));
+    const E = p.encargos ? toCents(p.encargos) : 0n;
+    const juros = toCents(valorParcela) - divRound(E, N) - divRound(P, N);
+    if (juros < 0n) {
+      throw new Error(`O valor da parcela não pode ser menor que ${centsToString(divRound(P, N) + divRound(E, N)).replace('.', ',')} (parcela sem juros).`);
+    }
+    let R = divRound(juros * RATE_SCALE, P);                          // taxa do período (1e8)
+    const dias = FREQ_DIAS[p.frequencia];
+    if (dias !== 30) {                                                 // converte para taxa mensal equivalente
+      R = BigInt(Math.round((Math.pow(1 + Number(R) / 1e8, 30 / dias) - 1) * 1e8));
+    }
+    if (R >= RATE_SCALE) throw new Error('Valor da parcela alto demais para esse prazo.');
+    return { taxaMensalPct: formatScaled(R, 6), parcelaFixa: undefined };
   }
 
   /** CET mensal (TIR, base 30 dias) por bisseção — informativo. */
@@ -1884,7 +1936,7 @@ window.APP_CONFIG = Object.freeze({
     RATE_SCALE, FREQ_DIAS, SISTEMAS,
     divRound, parseDecimal, formatScaled, toCents, centsToString, rateFromPercent, rateToString,
     periodRate, addMonths, addDays, diffDays, dueDate, defaultFirstDue,
-    schedule, cetMensal, annualFromMonthly, allocatePayment, pmtPrice, taxaParaParcela,
+    schedule, cetMensal, annualFromMonthly, allocatePayment, pmtPrice, taxaParaParcela, taxaSimplesParaParcela,
     numeroPorExtenso, valorPorExtenso, dataPorExtenso,
   };
 });
@@ -1959,9 +2011,13 @@ window.APP_CONFIG = Object.freeze({
     const atraso = m.el.querySelector('#pg-atraso');
     const soJuros = () => form.modo.value === 'juros';
     const update = () => {
+      const v = U.parseMoney(form.valor.value);
+      const excedente = !soJuros() && v && F.toCents(v) > F.toCents(saldo) ? F.toCents(v) - F.toCents(saldo) : 0n;
       aloc.innerHTML = soJuros()
         ? 'Os juros entram no caixa; o saldo da parcela não muda e ela (com as seguintes) passa a vencer um período depois.'
-        : allocationPreview(p, U.parseMoney(form.valor.value));
+        : excedente > 0n
+          ? `<span class="text-success">Quita esta parcela (${money(saldo)}) e abate <strong>${money(excedente)}</strong> da(s) próxima(s) parcela(s).</span>`
+          : allocationPreview(p, v);
       const d = form.data.value && F ? F.diffDays(p.vencimento, form.data.value) : 0;
       atraso.innerHTML = d > 0 ? `<span class="text-warning">Pagamento ${d} dia(s) após o vencimento.</span>` : '';
     };
@@ -1984,7 +2040,6 @@ window.APP_CONFIG = Object.freeze({
       const valor = U.parseMoney(form.valor.value);
       let ok = true;
       if (!valor || F.toCents(valor) <= 0n) { U.fieldError(form, 'valor', 'Informe um valor maior que zero.'); ok = false; }
-      else if (!soJuros() && F.toCents(valor) > F.toCents(saldo)) { U.fieldError(form, 'valor', `Valor acima do saldo (${money(saldo)}).`); ok = false; }
       if (!form.data.value) { U.fieldError(form, 'data', 'Informe a data.'); ok = false; }
       else if (form.data.value > U.today()) { U.fieldError(form, 'data', 'A data não pode ser futura.'); ok = false; }
       if (!ok) { U.focusFirstError(form); return; }
@@ -2021,11 +2076,25 @@ window.APP_CONFIG = Object.freeze({
         p_parcela_id: p.id, p_valor: valor, p_data_pagamento: form.data.value, p_forma: form.forma.value,
         p_observacoes: form.observacoes.value.trim() || null, p_confirmar_duplicidade: false,
       };
+      // Valor acima do saldo: a sobra abate as próximas parcelas (cada uma com seu recibo).
+      const comExcedente = F.toCents(valor) > F.toCents(saldo);
+      const fn = comExcedente ? 'registrar_pagamento_excedente' : 'registrar_pagamento';
+      if (comExcedente) {
+        const conf = await U.confirm({
+          title: 'Pagamento acima da parcela',
+          html: true,
+          message: `<p>O valor de <strong>${money(valor)}</strong> é maior que o saldo desta parcela (${money(saldo)}).</p>
+            <p>A parcela ${p.numero}/${p.qtd_parcelas} será quitada e <strong>${money(F.toCents(valor) - F.toCents(saldo))}</strong>
+            serão abatidos da(s) próxima(s) parcela(s), em ordem.</p>`,
+          confirmText: 'Confirmar',
+        });
+        if (!conf) return;
+      }
       U.busy(btn, true, 'Registrando...');
       try {
         let res;
         try {
-          res = await U.rpc('registrar_pagamento', params);
+          res = await U.rpc(fn, params);
         } catch (err) {
           if (err.code !== 'CG001') throw err;
           U.busy(btn, false);
@@ -2038,9 +2107,15 @@ window.APP_CONFIG = Object.freeze({
           });
           if (!confirm) return;
           U.busy(btn, true, 'Registrando...');
-          res = await U.rpc('registrar_pagamento', Object.assign({}, params, { p_confirmar_duplicidade: true }));
+          res = await U.rpc(fn, Object.assign({}, params, { p_confirmar_duplicidade: true }));
         }
         m.close();
+        if (comExcedente) {
+          U.toast(`Pagamento registrado em ${res.pagamentos.length} parcela(s); o excedente foi abatido das próximas.`, 'success', 8000);
+          if (onDone) onDone(res);
+          openReceipt(res.pagamentos, { aposPagamento: true });
+          return;
+        }
         U.toast(`Pagamento registrado. Recibo nº ${res.numero_recibo}.`, 'success');
         if (onDone) onDone(res);
         openReceipt(res.id, { aposPagamento: true });
@@ -2142,8 +2217,9 @@ window.APP_CONFIG = Object.freeze({
       <dt>Recibo</dt><dd>nº ${esc(g.numero_recibo)} · parcela ${g.parcela_numero}/${g.qtd_parcelas} do contrato nº ${esc(g.contrato_numero)}</dd>
       <dt>Valor pago</dt><dd><strong>${money(g.valor)}</strong> em ${date(g.data_pagamento)} · ${esc(U.LABELS.forma[g.forma])}</dd>
       <dt>Composição</dt><dd>Principal ${money(g.valor_principal)} · Juros ${money(g.valor_juros)} · Encargos ${money(g.valor_encargos)}</dd>
-      ${g.tipo === 'prorrogacao' ? `<dt>Tipo</dt><dd><strong>Pagamento só dos juros.</strong> O saldo da parcela não mudou e ela foi
-        prorrogada${parcela ? ` — vencimento atual: <strong>${date(parcela.vencimento)}</strong>` : ''}.</dd>` : ''}
+      ${g.tipo === 'prorrogacao' ? `<dt>Tipo</dt><dd><strong>Pagamento só dos juros</strong> (o saldo da parcela não mudou).</dd>
+        <dt>Vencimento</dt><dd>${g.vencimento_anterior ? `${date(g.vencimento_anterior)} → ` : ''}<strong>${date(g.vencimento_novo || (parcela && parcela.vencimento))}</strong>
+        (as parcelas seguintes também andaram um período)</dd>` : ''}
       ${dispensa ? `<dt>Desconto concedido</dt><dd>${money(parcela.juros_dispensados)} (quitação do contrato)</dd>` : ''}
       ${publico ? '' : `<dt>Registrado por</dt><dd>${esc(g.registrado_por_nome || '—')} em ${esc(U.datetime(g.created_at))}</dd>`}
       ${!publico && g.observacoes ? `<dt>Observações</dt><dd>${esc(g.observacoes)}</dd>` : ''}
@@ -2154,16 +2230,25 @@ window.APP_CONFIG = Object.freeze({
 
   /** Comprovante: a nota promissória da parcela com carimbo de pagamento. */
   function comprovanteHTML(g, notas, publico) {
-    const parcela = notas && (notas.parcelas || []).find((p) => p.numero === g.parcela_numero);
-    if (!parcela) return reciboSimples(g);
+    const atual = notas && (notas.parcelas || []).find((p) => p.numero === g.parcela_numero);
+    if (!atual) return reciboSimples(g);
+    const juros = g.tipo === 'prorrogacao';
+    // No pagamento só de juros, a nota do recibo mostra o novo vencimento gerado por esse pagamento.
+    const parcela = juros && g.vencimento_novo ? Object.assign({}, atual, { vencimento: g.vencimento_novo }) : atual;
     const devido = Number(parcela.valor) - Number(parcela.juros_dispensados || 0);
     const [rotulo, tipo] = g.status === 'estornado' ? ['ESTORNADO', 'estornado']
-      : g.tipo === 'prorrogacao' ? ['JUROS PAGOS', 'parcial']
+      : juros ? ['JUROS PAGOS', 'parcial']
       : Number(g.valor) >= devido - 0.005 ? ['PAGO', 'pago'] : ['PAGO PARCIAL', 'parcial'];
     return `<div class="comprovante">
+      ${juros && g.status !== 'estornado' ? `<div class="alert alert-info"><strong>Pagamento só dos juros.</strong>
+        Parcela ${g.parcela_numero}/${g.qtd_parcelas}${g.vencimento_anterior
+          ? `: vencimento alterado de <strong>${date(g.vencimento_anterior)}</strong> para <strong>${date(parcela.vencimento)}</strong>`
+          : ` prorrogada para <strong>${date(parcela.vencimento)}</strong>`}. O valor da parcela continua ${money(atual.valor)}.</div>` : ''}
       <div class="np-pago-wrap">${U.notaPromissoria(notas, parcela)}
         <div class="np-carimbo np-carimbo-${tipo}" aria-hidden="true"><strong>${rotulo}</strong>
-          <span>${money(g.valor)} em ${date(g.data_pagamento)}</span><span>Recibo nº ${esc(g.numero_recibo)}</span></div>
+          <span>${money(g.valor)} em ${date(g.data_pagamento)}</span>
+          ${juros && g.status !== 'estornado' ? `<span>Novo vencimento ${date(parcela.vencimento)}</span>` : ''}
+          <span>Recibo nº ${esc(g.numero_recibo)}</span></div>
       </div>
       ${detalhesPagamento(g, parcela, publico)}
     </div>`;
@@ -2777,10 +2862,15 @@ window.APP_CONFIG = Object.freeze({
 
   /** Gera um link de cadastro (uso único) e oferece o envio pelo WhatsApp. */
   function openLinkCadastro() {
+    const podeFixo = Auth.can('contratos.write'); // admin e gestor
     const m = U.modal({
       title: 'Link de cadastro para o cliente',
+      size: 'lg',
       body: `<p>O cliente abre o link sem login, preenche nome, RG, CPF, nascimento, endereço e envia foto do RG, da frente da casa,
           do último holerite e do comprovante de residência. Ao concluir, ele aparece na lista como <strong>Novo cadastro</strong>.</p>
+        <div class="section-title">Link fixo (para divulgar)</div>
+        <div id="lk-fixo"></div>
+        <div class="section-title">Link individual (uso único, 7 dias)</div>
         <form id="form-convite" novalidate><div class="form-grid">
           <div class="field"><label for="cv-nome">Nome do cliente (opcional)</label>
             <input type="text" id="cv-nome" name="nome" maxlength="150"></div>
@@ -2788,9 +2878,69 @@ window.APP_CONFIG = Object.freeze({
             <input type="text" id="cv-tel" name="telefone" inputmode="tel" maxlength="16" placeholder="(00) 00000-0000"><span class="error-msg"></span></div>
         </div></form>
         <p class="small muted mt-1">O link vale por 7 dias e só pode ser usado uma vez. Gere um link para cada cliente.</p>`,
-      footer: `<button type="button" class="btn" data-close>Cancelar</button><button type="submit" form="form-convite" class="btn btn-primary">Gerar link</button>`,
+      footer: `<button type="button" class="btn" data-close>Fechar</button><button type="submit" form="form-convite" class="btn btn-primary">Gerar link individual</button>`,
     });
     const form = m.el.querySelector('form');
+
+    // ---- link fixo
+    const boxFixo = m.el.querySelector('#lk-fixo');
+    const linkFixo = () => `${location.origin}${location.pathname}#cadastro?f=${Auth.org.link_cadastro_token}`;
+    const msgFixo = () => `Olá! Para fazer seu cadastro na ${Auth.org.nome}, acesse o link abaixo e preencha seus dados.\n\n` +
+      `Tenha em mãos: foto do RG (frente e verso), foto da frente da sua casa, seu último holerite e um comprovante de residência.\n\n${linkFixo()}`;
+    const renderFixo = () => {
+      if (!Auth.org.link_cadastro_token) {
+        boxFixo.innerHTML = `<p class="muted">Nenhum link fixo ativo. ${podeFixo ? 'Crie um para divulgar no WhatsApp, Instagram ou onde preferir.' : 'Peça a um administrador ou gestor para criar.'}</p>
+          ${podeFixo ? '<button type="button" class="btn btn-primary" data-fixo="criar">Criar link fixo</button>' : ''}`;
+      } else {
+        boxFixo.innerHTML = `<div class="link-box"><input type="text" readonly value="${esc(linkFixo())}" aria-label="Link fixo de cadastro">
+            <button type="button" class="btn" data-fixo="copiar">Copiar</button></div>
+          <div class="btn-group mt-1">
+            <a class="btn btn-sm btn-whatsapp" target="_blank" rel="noopener noreferrer" href="https://wa.me/?text=${encodeURIComponent(msgFixo())}">Compartilhar no WhatsApp</a>
+            ${podeFixo ? `<button type="button" class="btn btn-sm" data-fixo="trocar">Gerar novo link</button>
+              <button type="button" class="btn btn-sm btn-danger" data-fixo="desativar">Desativar</button>` : ''}
+          </div>
+          <span class="hint">Cada pessoa que abre o link faz o próprio cadastro (até 60 por hora). Gerar um novo link desativa o atual.</span>`;
+      }
+    };
+    boxFixo.addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-fixo]');
+      if (!b) return;
+      const acao = b.dataset.fixo;
+      if (acao === 'copiar') {
+        try { await navigator.clipboard.writeText(linkFixo()); } catch (_) { boxFixo.querySelector('input').select(); document.execCommand('copy'); }
+        U.toast('Link copiado.', 'success', 2500);
+        return;
+      }
+      if (acao === 'trocar' || acao === 'desativar') {
+        const ok = await U.confirm({
+          title: acao === 'trocar' ? 'Gerar novo link fixo' : 'Desativar link fixo',
+          message: acao === 'trocar'
+            ? 'O link atual deixará de funcionar imediatamente e um novo será criado. Continuar?'
+            : 'O link fixo deixará de funcionar. Os cadastros já recebidos não são afetados. Continuar?',
+          confirmText: acao === 'trocar' ? 'Gerar novo' : 'Desativar',
+          danger: acao === 'desativar',
+        });
+        if (!ok) return;
+      }
+      U.busy(b, true, '');
+      try {
+        if (acao === 'desativar') {
+          await U.rpc('desativar_link_cadastro_fixo');
+          Auth.org.link_cadastro_token = null;
+          U.toast('Link fixo desativado.', 'success');
+        } else {
+          Auth.org.link_cadastro_token = await U.rpc('gerar_link_cadastro_fixo');
+          U.toast(acao === 'criar' ? 'Link fixo criado.' : 'Novo link fixo gerado; o anterior foi desativado.', 'success');
+        }
+        renderFixo();
+      } catch (err) {
+        U.busy(b, false);
+        U.toast(U.errorMessage(err), 'error');
+      }
+    });
+    renderFixo();
+
+    // ---- link individual
     form.telefone.addEventListener('blur', () => { if (U.digits(form.telefone.value)) form.telefone.value = U.formatPhone(form.telefone.value); });
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -2972,7 +3122,8 @@ window.APP_CONFIG = Object.freeze({
         <div class="field"><label for="t-primeiro">Primeiro vencimento <span class="req">*</span></label>
           <input type="date" id="t-primeiro" name="primeiro" value="${F.defaultFirstDue(today, 'mensal')}"><span class="error-msg"></span></div>
         <div class="field"><label for="t-sistema">Sistema de amortização <span class="req">*</span></label>
-          <select id="t-sistema" name="sistema">${U.options(U.LABELS.sistema, 'PRICE')}</select></div>
+          <select id="t-sistema" name="sistema">${U.options(U.LABELS.sistema, 'SIMPLES')}</select>
+          <span class="hint">Juros simples: juros fixos sobre o valor emprestado (ex.: 2.000 a 10% em 10x = 10 × 400).</span></div>
         <div class="field"><label for="t-taxa">Taxa de juros (% a.m.) <span class="req">*</span></label>
           <input type="text" id="t-taxa" name="taxa" inputmode="decimal" placeholder="0,00">
           <span class="hint">${max ? `Limite da organização: ${U.pct(max.fraction, 4)} a.m.` : 'Sem limite configurado.'}</span>
@@ -3053,14 +3204,14 @@ window.APP_CONFIG = Object.freeze({
     const first = s.rows[0].total;
     const last = s.rows[s.rows.length - 1].total;
     const cetA = F.annualFromMonthly(s.cetMensal);
-    const editavel = p.sistema === 'PRICE';
+    const editavel = p.sistema === 'PRICE' || p.sistema === 'SIMPLES';
     const parcelaItem = editavel
       ? `<div class="summary-item sim-edit"><div class="label">Parcela <span class="muted">(editável)</span></div>
           <input type="text" class="sim-input" id="sim-parcela" inputmode="decimal" value="${U.moneyInput(F.centsToString(first))}" aria-label="Valor da parcela">
           <div class="small muted">${first !== last ? `última ${money(last)}` : '&nbsp;'}</div>
           <button type="button" class="btn btn-sm mt-1" id="sim-arredondar">Arredondar para cima</button></div>`
       : `<div class="summary-item"><div class="label">Parcela</div><div class="value">${money(first)} → ${money(last)}</div>
-          <div class="small muted">No SAC as parcelas diminuem; use Price para editar o valor.</div></div>`;
+          <div class="small muted">No SAC as parcelas diminuem; use Price ou Juros simples para editar o valor.</div></div>`;
     const totalItem = editavel
       ? `<div class="summary-item sim-edit"><div class="label">Total a pagar <span class="muted">(editável)</span></div>
           <input type="text" class="sim-input" id="sim-total" inputmode="decimal" value="${U.moneyInput(F.centsToString(s.total))}" aria-label="Total a pagar"></div>`
@@ -3105,7 +3256,7 @@ window.APP_CONFIG = Object.freeze({
       out.insertAdjacentHTML('afterbegin', '<div class="alert alert-warning sim-stale">Os dados mudaram. Simule novamente antes de confirmar.</div>');
     };
     bindTermsAuto(form, () => { if (current && !out.querySelector('.sim-stale')) stale(); });
-    /** Ajusta a taxa para a parcela desejada (Price) e simula de novo. */
+    /** Ajusta a taxa para a parcela desejada (Price ou Juros simples) e simula de novo. */
     const aplicarParcela = (valor) => {
       if (!current) return;
       const v = U.parseMoney(valor);
@@ -3113,8 +3264,9 @@ window.APP_CONFIG = Object.freeze({
       try {
         const tx = F.taxaParaParcela(current.p, v);
         form.taxa.value = pctTexto(tx.taxaMensalPct);
-        form.parcela_fixa.value = tx.parcelaFixa;
+        form.parcela_fixa.value = tx.parcelaFixa || '';
         simular(false);
+        if (!tx.parcelaFixa) U.toast(`Taxa recalculada para ${pctTexto(tx.taxaMensalPct)}% a.m.`, 'info', 5000);
       } catch (err) {
         U.toast(err.message, 'error', 8000);
       }
@@ -4697,6 +4849,31 @@ window.APP_CONFIG = Object.freeze({
     throws(() => F.schedule(Object.assign({}, base, { parcelaFixa: '600.00' })), 'alta demais');
     throws(() => F.schedule(Object.assign({}, base, { sistema: 'SAC', parcelaFixa: '90.00' })), 'SAC');
     throws(() => F.taxaParaParcela(base, '50.00'), 'abaixo do mínimo sem juros');
+  });
+  test('juros simples: R$ 2.000 a 10% em 10x = 10 parcelas de R$ 400', () => {
+    const s = F.schedule({ principal: '2000.00', taxaMensalPct: '10', parcelas: 10, frequencia: 'mensal', sistema: 'SIMPLES',
+                           primeiroVencimento: '2026-02-10', dataContratacao: '2026-01-10' });
+    s.rows.forEach((r) => { eq(r.total, c('400.00'), 'parcela ' + r.numero); eq(r.juros, c('200.00')); eq(r.principal, c('200.00')); });
+    eq(s.totalJuros, c('2000.00'));
+    eq(s.total, c('4000.00'));
+    ok(s.cetMensal > 0.145 && s.cetMensal < 0.16, 'CET efetivo ~15% a.m.: ' + s.cetMensal);
+  });
+  test('juros simples com divisão não exata e encargos', () => {
+    const s = F.schedule({ principal: '1000.00', taxaMensalPct: '3', parcelas: 3, frequencia: 'mensal', sistema: 'SIMPLES', encargos: '10.00', primeiroVencimento: '2026-02-10' });
+    eq(s.rows.map((r) => F.centsToString(r.total)).join('|'), '366.66|366.68|366.66');
+    eq(s.totalPrincipal, c('1000.00'));
+    eq(s.totalJuros, c('90.00'));
+  });
+  test('juros simples: editar a parcela recalcula a taxa', () => {
+    const base = { principal: '2000.00', parcelas: 10, frequencia: 'mensal', sistema: 'SIMPLES', primeiroVencimento: '2026-02-10' };
+    eq(F.taxaParaParcela(base, '400.00').taxaMensalPct, '10.000000');
+    const t = F.taxaParaParcela(base, '350.00');
+    const s = F.schedule(Object.assign({}, base, { taxaMensalPct: t.taxaMensalPct }));
+    s.rows.forEach((r) => eq(r.total, c('350.00'), 'parcela ' + r.numero));
+    throws(() => F.taxaParaParcela(base, '150.00'), 'abaixo do mínimo');
+    const sem = F.taxaParaParcela(Object.assign({}, base, { frequencia: 'semanal' }), '400.00');
+    const ss = F.schedule(Object.assign({}, base, { frequencia: 'semanal', taxaMensalPct: sem.taxaMensalPct }));
+    ok(ss.rows.every((r) => r.total >= c('399.99') && r.total <= c('400.01')), 'semanal ~ R$ 400');
   });
   test('datas por extenso', () => {
     const d = F.dataPorExtenso('2026-11-01');
