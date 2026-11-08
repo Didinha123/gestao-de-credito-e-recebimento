@@ -788,6 +788,14 @@ window.APP_CONFIG = Object.freeze({
       const nome = String(cliente.nome || '').split(' ')[0];
       const g = pagamentos[0];
       const total = pagamentos.reduce((a, x) => a + Number(x.valor), 0);
+      if (pagamentos.length === 1 && g.tipo === 'acumulo') {
+        return `Olá, ${nome}! Confirmamos o recebimento dos juros.\n\n` +
+          `• Contrato nº ${g.contrato_numero} — parcela ${g.parcela_numero}/${g.qtd_parcelas}\n` +
+          `• Valor pago: ${U.money(g.valor)}\n• Data: ${U.date(g.data_pagamento)}\n` +
+          `• O restante desta parcela (${U.money(g.valor_transferido)}) foi somado à parcela ${g.parcela_destino_numero}` +
+          `${g.parcela_destino_vencimento ? `, com vencimento em ${U.date(g.parcela_destino_vencimento)}` : ''}.\n\n` +
+          `Seu comprovante:\n${link}\n\nObrigado!`;
+      }
       if (pagamentos.length === 1 && g.tipo === 'prorrogacao') {
         return `Olá, ${nome}! Confirmamos o recebimento dos juros.\n\n` +
           `• Contrato nº ${g.contrato_numero} — parcela ${g.parcela_numero}/${g.qtd_parcelas}\n` +
@@ -1987,7 +1995,7 @@ window.APP_CONFIG = Object.freeze({
             <label class="quit-opcao"><input type="radio" name="modo" value="parcela" checked>
               <div><strong>Pagar a parcela</strong><div class="small muted">Valor total ou parcial da parcela.</div></div></label>
             <label class="quit-opcao"><input type="radio" name="modo" value="juros">
-              <div><strong>Pagar só os juros</strong><div class="small muted">Cliente paga os juros agora; esta parcela e as seguintes vão para o período seguinte.</div></div></label>
+              <div><strong>Pagar só os juros</strong><div class="small muted">Cliente paga os juros agora; o restante desta parcela é somado à próxima (as datas não mudam).</div></div></label>
           </div>
           <div class="form-grid">
             <div class="field"><label for="pg-valor" id="pg-valor-label">Valor recebido (R$) <span class="req">*</span></label>
@@ -2014,7 +2022,9 @@ window.APP_CONFIG = Object.freeze({
       const v = U.parseMoney(form.valor.value);
       const excedente = !soJuros() && v && F.toCents(v) > F.toCents(saldo) ? F.toCents(v) - F.toCents(saldo) : 0n;
       aloc.innerHTML = soJuros()
-        ? 'Os juros entram no caixa; o saldo da parcela não muda e ela (com as seguintes) passa a vencer um período depois.'
+        ? (v && F.toCents(v) < F.toCents(saldo)
+          ? `Os juros entram no caixa. A parcela é encerrada e <strong>${money(F.toCents(saldo) - F.toCents(v))}</strong> são somados à próxima parcela.`
+          : 'O valor precisa ser menor que o saldo da parcela.')
         : excedente > 0n
           ? `<span class="text-success">Quita esta parcela (${money(saldo)}) e abate <strong>${money(excedente)}</strong> da(s) próxima(s) parcela(s).</span>`
           : allocationPreview(p, v);
@@ -2024,7 +2034,7 @@ window.APP_CONFIG = Object.freeze({
     form.querySelectorAll('input[name=modo]').forEach((r) => r.addEventListener('change', () => {
       form.valor.value = U.moneyInput(soJuros() ? String(p.valor_juros) : saldo);
       m.el.querySelector('#pg-valor-label').innerHTML = `${soJuros() ? 'Valor dos juros (R$)' : 'Valor recebido (R$)'} <span class="req">*</span>`;
-      m.el.querySelector('button[type=submit]').textContent = soJuros() ? 'Receber juros e prorrogar' : 'Confirmar recebimento';
+      m.el.querySelector('button[type=submit]').textContent = soJuros() ? 'Receber e acumular na próxima' : 'Confirmar recebimento';
       update();
       form.valor.select();
     }));
@@ -2046,23 +2056,28 @@ window.APP_CONFIG = Object.freeze({
 
       const btn = m.el.querySelector('button[type=submit]');
       if (soJuros()) {
+        if (F.toCents(valor) >= F.toCents(saldo)) {
+          U.fieldError(form, 'valor', 'Esse valor quita a parcela inteira; use "Pagar a parcela".');
+          return;
+        }
+        const restante = F.toCents(saldo) - F.toCents(valor);
         const conf = await U.confirm({
           title: 'Pagar só os juros',
           html: true,
-          message: `<p>Registrar <strong>${money(valor)}</strong> de juros da parcela ${p.numero}/${p.qtd_parcelas} do contrato nº ${esc(p.contrato_numero)}?</p>
-            <p class="small muted">O saldo da parcela continua o mesmo. Esta parcela e todas as seguintes passam a vencer um período depois
-            (o contrato termina um período mais tarde).</p>`,
-          confirmText: 'Receber juros e prorrogar',
+          message: `<p>Registrar <strong>${money(valor)}</strong> da parcela ${p.numero}/${p.qtd_parcelas} do contrato nº ${esc(p.contrato_numero)}?</p>
+            <p>A parcela ${p.numero} será encerrada e o restante, <strong>${money(restante)}</strong>, será somado à próxima parcela.
+            As datas de vencimento não mudam.</p>`,
+          confirmText: 'Receber e acumular',
         });
         if (!conf) return;
         U.busy(btn, true, 'Registrando...');
         try {
-          const res = await U.rpc('pagar_juros_prorrogar', {
+          const res = await U.rpc('pagar_juros_acumular', {
             p_parcela_id: p.id, p_valor: valor, p_data_pagamento: form.data.value, p_forma: form.forma.value,
             p_observacoes: form.observacoes.value.trim() || null,
           });
           m.close();
-          U.toast(`Juros recebidos (recibo nº ${res.numero_recibo}). A parcela passou a vencer em ${date(res.novo_vencimento)}.`, 'success', 9000);
+          U.toast(`Recebido (recibo nº ${res.numero_recibo}). ${money(res.valor_transferido)} foram somados à parcela ${res.parcela_destino}, que agora é de ${money(res.novo_valor_destino)}.`, 'success', 10000);
           if (onDone) onDone(res);
           openReceipt(res.id, { aposPagamento: true });
         } catch (err) {
@@ -2216,7 +2231,10 @@ window.APP_CONFIG = Object.freeze({
     return `<dl class="dl small mt-1">
       <dt>Recibo</dt><dd>nº ${esc(g.numero_recibo)} · parcela ${g.parcela_numero}/${g.qtd_parcelas} do contrato nº ${esc(g.contrato_numero)}</dd>
       <dt>Valor pago</dt><dd><strong>${money(g.valor)}</strong> em ${date(g.data_pagamento)} · ${esc(U.LABELS.forma[g.forma])}</dd>
+      ${parcela && Math.abs(Number(parcela.valor) - Number(g.valor)) > 0.004 ? `<dt>Valor da parcela</dt><dd>${money(parcela.valor)} (valor contratado)</dd>` : ''}
       <dt>Composição</dt><dd>Principal ${money(g.valor_principal)} · Juros ${money(g.valor_juros)} · Encargos ${money(g.valor_encargos)}</dd>
+      ${g.tipo === 'acumulo' ? `<dt>Tipo</dt><dd><strong>Pagamento só dos juros</strong> — restante de ${money(g.valor_transferido)}
+        somado à parcela ${esc(g.parcela_destino_numero)}.</dd>` : ''}
       ${g.tipo === 'prorrogacao' ? `<dt>Tipo</dt><dd><strong>Pagamento só dos juros</strong> (o saldo da parcela não mudou).</dd>
         <dt>Vencimento</dt><dd>${g.vencimento_anterior ? `${date(g.vencimento_anterior)} → ` : ''}<strong>${date(g.vencimento_novo || (parcela && parcela.vencimento))}</strong>
         (as parcelas seguintes também andaram um período)</dd>` : ''}
@@ -2232,22 +2250,31 @@ window.APP_CONFIG = Object.freeze({
   function comprovanteHTML(g, notas, publico) {
     const atual = notas && (notas.parcelas || []).find((p) => p.numero === g.parcela_numero);
     if (!atual) return reciboSimples(g);
-    const juros = g.tipo === 'prorrogacao';
-    // No pagamento só de juros, a nota do recibo mostra o novo vencimento gerado por esse pagamento.
-    const parcela = juros && g.vencimento_novo ? Object.assign({}, atual, { vencimento: g.vencimento_novo }) : atual;
+    const prorrogou = g.tipo === 'prorrogacao';   // modelo antigo: empurrava as datas
+    const acumulou = g.tipo === 'acumulo';         // modelo atual: o restante vai para a próxima parcela
+    const ativo = g.status !== 'estornado';
+    // Na prorrogação, a nota do recibo mostra o novo vencimento gerado por esse pagamento.
+    const parcela = prorrogou && g.vencimento_novo ? Object.assign({}, atual, { vencimento: g.vencimento_novo }) : atual;
     const devido = Number(parcela.valor) - Number(parcela.juros_dispensados || 0);
-    const [rotulo, tipo] = g.status === 'estornado' ? ['ESTORNADO', 'estornado']
-      : juros ? ['JUROS PAGOS', 'parcial']
+    const [rotulo, tipo] = !ativo ? ['ESTORNADO', 'estornado']
+      : prorrogou || acumulou ? ['JUROS PAGOS', 'parcial']
       : Number(g.valor) >= devido - 0.005 ? ['PAGO', 'pago'] : ['PAGO PARCIAL', 'parcial'];
+    const aviso = !ativo ? ''
+      : acumulou ? `<div class="alert alert-info"><strong>Pagamento só dos juros.</strong> A parcela ${g.parcela_numero}/${g.qtd_parcelas}
+          foi encerrada e o restante, <strong>${money(g.valor_transferido)}</strong>, foi somado à
+          <strong>parcela ${esc(g.parcela_destino_numero)}</strong>. As datas de vencimento não mudaram.</div>`
+      : prorrogou ? `<div class="alert alert-info"><strong>Pagamento só dos juros.</strong>
+          Parcela ${g.parcela_numero}/${g.qtd_parcelas}${g.vencimento_anterior
+            ? `: vencimento alterado de <strong>${date(g.vencimento_anterior)}</strong> para <strong>${date(parcela.vencimento)}</strong>`
+            : ` prorrogada para <strong>${date(parcela.vencimento)}</strong>`}. O valor da parcela continua ${money(atual.valor)}.</div>`
+      : '';
     return `<div class="comprovante">
-      ${juros && g.status !== 'estornado' ? `<div class="alert alert-info"><strong>Pagamento só dos juros.</strong>
-        Parcela ${g.parcela_numero}/${g.qtd_parcelas}${g.vencimento_anterior
-          ? `: vencimento alterado de <strong>${date(g.vencimento_anterior)}</strong> para <strong>${date(parcela.vencimento)}</strong>`
-          : ` prorrogada para <strong>${date(parcela.vencimento)}</strong>`}. O valor da parcela continua ${money(atual.valor)}.</div>` : ''}
-      <div class="np-pago-wrap">${U.notaPromissoria(notas, parcela)}
+      ${aviso}
+      <div class="np-pago-wrap">${U.notaPromissoria(notas, Object.assign({}, parcela, { valor: g.valor }))}
         <div class="np-carimbo np-carimbo-${tipo}" aria-hidden="true"><strong>${rotulo}</strong>
           <span>${money(g.valor)} em ${date(g.data_pagamento)}</span>
-          ${juros && g.status !== 'estornado' ? `<span>Novo vencimento ${date(parcela.vencimento)}</span>` : ''}
+          ${prorrogou && ativo ? `<span>Novo vencimento ${date(parcela.vencimento)}</span>` : ''}
+          ${acumulou && ativo ? `<span>${money(g.valor_transferido)} → parcela ${esc(g.parcela_destino_numero)}</span>` : ''}
           <span>Recibo nº ${esc(g.numero_recibo)}</span></div>
       </div>
       ${detalhesPagamento(g, parcela, publico)}
@@ -4489,7 +4516,81 @@ window.APP_CONFIG = Object.freeze({
     }
   }
 
+  /** Senha inicial aleatória: 10 caracteres, sempre com letras e números, sem caracteres confusos. */
+  function gerarSenha() {
+    const letras = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ';
+    const numeros = '23456789';
+    const todos = letras + numeros;
+    const sorteio = (conj) => conj[crypto.getRandomValues(new Uint32Array(1))[0] % conj.length];
+    const chars = [sorteio(letras), sorteio(numeros), ...Array.from({ length: 8 }, () => sorteio(todos))];
+    for (let i = chars.length - 1; i > 0; i--) {
+      const j = crypto.getRandomValues(new Uint32Array(1))[0] % (i + 1);
+      [chars[i], chars[j]] = [chars[j], chars[i]];
+    }
+    return chars.join('');
+  }
+
+  /** Mensagem de erro de uma chamada à Edge Function (inclui o caso de a função não estar publicada). */
+  async function erroDaFuncao(error) {
+    const naoPublicada = 'A função "criar-usuario" não está publicada no Supabase. Veja no README: "Criar usuários pelo sistema".';
+    const ctx = error && error.context;
+    if (ctx && typeof ctx.json === 'function') {
+      if (ctx.status === 404) return naoPublicada;
+      try {
+        const corpo = await ctx.json();
+        if (corpo && corpo.erro) return corpo.erro;
+      } catch (_) { /* resposta sem JSON */ }
+    }
+    // Função inexistente: o navegador nem consegue enviar (sem CORS) → "Failed to send a request".
+    if (/Failed to send|Failed to fetch|not found/i.test((error && error.message) || '')) return naoPublicada;
+    return U.errorMessage(error);
+  }
+
+  function bindNovoUsuario() {
+    const f = document.getElementById('form-novo-usuario');
+    f.papel.innerHTML = U.options(U.LABELS.papel, 'operador');
+    document.getElementById('nu-gerar').addEventListener('click', () => { f.senha.value = gerarSenha(); });
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      U.clearErrors(f);
+      const nome = f.nome.value.trim().replace(/\s+/g, ' ');
+      const email = f.email.value.trim().toLowerCase();
+      const senha = f.senha.value;
+      let ok = true;
+      if (nome.length < 3) { U.fieldError(f, 'nome', 'Informe o nome completo.'); ok = false; }
+      if (!U.validEmail(email)) { U.fieldError(f, 'email', 'E-mail inválido.'); ok = false; }
+      if (!U.strongPassword(senha)) { U.fieldError(f, 'senha', 'Mínimo de 8 caracteres, com letras e números.'); ok = false; }
+      if (!ok) { U.focusFirstError(f); return; }
+      const papel = f.papel.value;
+      const btn = f.querySelector('button[type=submit]');
+      U.busy(btn, true, 'Criando...');
+      try {
+        const { data, error } = await Auth.client.functions.invoke('criar-usuario', { body: { nome, email, senha, papel } });
+        if (error) throw new Error(await erroDaFuncao(error));
+        if (!data || !data.id) throw new Error((data && data.erro) || 'Não foi possível criar o usuário.');
+        f.reset();
+        f.papel.value = 'operador';
+        U.toast('Usuário criado e vinculado à organização.', 'success');
+        U.modal({
+          title: 'Usuário criado',
+          body: `<p>Repasse os dados de acesso para <strong>${esc(nome)}</strong>:</p>
+            <dl class="dl"><dt>Endereço</dt><dd>${esc(location.origin + location.pathname)}</dd>
+              <dt>E-mail</dt><dd class="mono">${esc(email)}</dd><dt>Senha inicial</dt><dd class="mono">${esc(senha)}</dd>
+              <dt>Papel</dt><dd>${esc(U.LABELS.papel[papel])}</dd></dl>
+            <p class="small muted mt-1">Por segurança, oriente a pessoa a trocar a senha no primeiro acesso (Configurações → Alterar senha).
+            Esta senha não fica salva no sistema e não será mostrada de novo.</p>`,
+          footer: '<button type="button" class="btn btn-primary" data-close>Entendi</button>',
+        });
+        renderUsers();
+      } catch (err) {
+        U.toast(err.message || U.errorMessage(err), 'error', 10000);
+      }
+      U.busy(btn, false);
+    });
+  }
+
   function bindUsers() {
+    bindNovoUsuario();
     const f = document.getElementById('form-link');
     f.papel.innerHTML = U.options(U.LABELS.papel, 'operador');
     f.addEventListener('submit', async (e) => {
