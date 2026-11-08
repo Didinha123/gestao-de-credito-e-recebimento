@@ -363,6 +363,24 @@
     <section class="card mt-2 admin-only" id="card-users">
     <div class="card-header"><h2>Usuários e permissões</h2></div>
     <div class="card-body">
+    <div class="section-title mt-0">Criar usuário</div>
+    <form id="form-novo-usuario" novalidate>
+    <div class="form-grid">
+    <div class="field"><label for="nu-nome">Nome completo <span class="req">*</span></label>
+    <input type="text" id="nu-nome" name="nome" maxlength="150" autocomplete="off"><span class="error-msg"></span></div>
+    <div class="field"><label for="nu-email">E-mail (login) <span class="req">*</span></label>
+    <input type="email" id="nu-email" name="email" maxlength="150" autocomplete="off"><span class="error-msg"></span></div>
+    <div class="field"><label for="nu-senha">Senha inicial <span class="req">*</span></label>
+    <div class="input-group"><input type="text" id="nu-senha" name="senha" maxlength="72" autocomplete="new-password">
+    <button type="button" class="btn" id="nu-gerar">Gerar</button></div>
+    <span class="hint">Mínimo de 8 caracteres, com letras e números. O usuário pode trocar depois em "Alterar senha".</span>
+    <span class="error-msg"></span></div>
+    <div class="field"><label for="nu-papel">Papel <span class="req">*</span></label>
+    <select id="nu-papel" name="papel"></select></div>
+    </div>
+    <div class="mt-1"><button type="submit" class="btn btn-primary">Criar usuário</button></div>
+    </form>
+    <div class="section-title">Vincular conta já existente</div>
     <form id="form-link" class="input-group mb-2" novalidate>
     <input type="email" name="email" placeholder="E-mail de quem já criou a conta" aria-label="E-mail do usuário" maxlength="150">
     <select name="papel" aria-label="Papel" style="max-width:180px"></select>
