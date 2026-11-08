@@ -1979,7 +1979,13 @@ window.APP_CONFIG = Object.freeze({
 
   /** Modal de recebimento para uma parcela (linha de vw_parcelas). */
   function openPaymentModal({ parcela: p, onDone }) {
-    const saldo = String(p.saldo);
+    let saldo = String(p.saldo);
+    let totalParcela = String(p.valor_total);
+    // Admin e gestor podem alterar o valor da parcela (acréscimo ou desconto), como na simulação do contrato.
+    const podeAjustar = Auth.can('contratos.write');
+    const campoValor = (id, valor, rotulo) => podeAjustar
+      ? `<input type="text" id="${id}" inputmode="decimal" class="input-valor-resumo" aria-label="${rotulo}" value="${esc(U.moneyInput(valor))}">`
+      : money(valor);
     const m = U.modal({
       title: 'Registrar pagamento',
       size: 'lg',
@@ -1988,10 +1994,11 @@ window.APP_CONFIG = Object.freeze({
           <div class="summary-item"><div class="label">Cliente</div><div class="value" style="font-size:.95rem">${esc(p.cliente_nome)}</div></div>
           <div class="summary-item"><div class="label">Contrato / parcela</div><div class="value">${esc(p.contrato_numero)} · ${p.numero}/${p.qtd_parcelas}</div></div>
           <div class="summary-item"><div class="label">Vencimento</div><div class="value">${date(p.vencimento)}</div></div>
-          <div class="summary-item"><div class="label">Valor da parcela</div><div class="value">${money(p.valor_total)}</div></div>
+          <div class="summary-item"><div class="label">Valor da parcela</div><div class="value">${campoValor('pg-total', p.valor_total, 'Valor da parcela')}</div></div>
           <div class="summary-item"><div class="label">Já pago</div><div class="value">${money(p.valor_pago)}</div></div>
-          <div class="summary-item"><div class="label">Saldo</div><div class="value">${money(saldo)}</div></div>
+          <div class="summary-item"><div class="label">Saldo</div><div class="value">${campoValor('pg-saldo', saldo, 'Saldo')}</div></div>
         </div>
+        <div id="pg-ajuste" class="small mb-2"></div>
         <form id="form-pagamento" novalidate>
           <div class="quit-opcoes mb-2">
             <label class="quit-opcao"><input type="radio" name="modo" value="parcela" checked>
@@ -2020,6 +2027,58 @@ window.APP_CONFIG = Object.freeze({
     const aloc = m.el.querySelector('#pg-aloc');
     const atraso = m.el.querySelector('#pg-atraso');
     const soJuros = () => form.modo.value === 'juros';
+    const ajusteBox = m.el.querySelector('#pg-ajuste');
+    const inTotal = m.el.querySelector('#pg-total');
+    const inSaldo = m.el.querySelector('#pg-saldo');
+    const ajustado = () => F.toCents(totalParcela) !== F.toCents(p.valor_total);
+    const mostrarAjuste = () => {
+      if (!ajustado()) { ajusteBox.innerHTML = ''; return; }
+      const dif = F.toCents(totalParcela) - F.toCents(p.valor_total);
+      ajusteBox.innerHTML = dif > 0n
+        ? `<span class="text-warning">Acréscimo de <strong>${money(dif)}</strong> na parcela (de ${money(p.valor_total)} para ${money(totalParcela)}).</span>`
+        : `<span class="text-success">Desconto de <strong>${money(-dif)}</strong> na parcela (de ${money(p.valor_total)} para ${money(totalParcela)}).</span>`;
+    };
+    // Valor da parcela e saldo andam juntos (saldo = parcela − já pago); o valor recebido acompanha o saldo.
+    const aplicarNovoSaldo = (novoSaldo) => {
+      const acompanhava = !soJuros() && F.toCents(U.parseMoney(form.valor.value) || '0') === F.toCents(saldo);
+      saldo = F.centsToString(novoSaldo);
+      totalParcela = F.centsToString(novoSaldo + F.toCents(p.valor_pago));
+      if (acompanhava) form.valor.value = U.moneyInput(saldo);
+      mostrarAjuste();
+      update();
+    };
+    if (inTotal) {
+      inTotal.addEventListener('input', () => {
+        const v = U.parseMoney(inTotal.value);
+        if (!v) return;
+        const s = F.toCents(v) - F.toCents(p.valor_pago);
+        if (s <= 0n) { ajusteBox.innerHTML = `<span class="text-danger">O valor da parcela precisa ser maior que o já pago (${money(p.valor_pago)}).</span>`; return; }
+        inSaldo.value = U.moneyInput(F.centsToString(s));
+        aplicarNovoSaldo(s);
+      });
+      inSaldo.addEventListener('input', () => {
+        const v = U.parseMoney(inSaldo.value);
+        if (!v || F.toCents(v) <= 0n) { ajusteBox.innerHTML = '<span class="text-danger">O saldo precisa ser maior que zero.</span>'; return; }
+        inTotal.value = U.moneyInput(F.centsToString(F.toCents(v) + F.toCents(p.valor_pago)));
+        aplicarNovoSaldo(F.toCents(v));
+      });
+      [inTotal, inSaldo].forEach((i) => i.addEventListener('blur', () => {
+        inTotal.value = U.moneyInput(totalParcela);
+        inSaldo.value = U.moneyInput(saldo);
+        mostrarAjuste();
+      }));
+    }
+    // Grava o novo valor da parcela (uma vez) antes de registrar o pagamento.
+    let ajusteGravado = false;
+    const gravarAjuste = async () => {
+      if (!ajustado() || ajusteGravado) return;
+      await U.rpc('ajustar_parcela', {
+        p_parcela_id: p.id, p_novo_valor: totalParcela,
+        p_motivo: form.observacoes.value.trim() || 'Ajuste no registro de pagamento',
+      });
+      ajusteGravado = true;
+      if (inTotal) { inTotal.disabled = true; inSaldo.disabled = true; }
+    };
     const update = () => {
       const v = U.parseMoney(form.valor.value);
       const excedente = !soJuros() && v && F.toCents(v) > F.toCents(saldo) ? F.toCents(v) - F.toCents(saldo) : 0n;
@@ -2029,7 +2088,9 @@ window.APP_CONFIG = Object.freeze({
           : 'Informe o valor dos juros.')
         : excedente > 0n
           ? `<span class="text-success">Quita esta parcela (${money(saldo)}) e abate <strong>${money(excedente)}</strong> da(s) próxima(s) parcela(s).</span>`
-          : allocationPreview(p, v);
+          : ajustado()
+            ? (v ? `Aplicado à parcela com o novo valor (saldo ${money(saldo)}).` : '')
+            : allocationPreview(p, v);
       const d = form.data.value && F ? F.diffDays(p.vencimento, form.data.value) : 0;
       atraso.innerHTML = d > 0 ? `<span class="text-warning">Pagamento ${d} dia(s) após o vencimento.</span>` : '';
     };
@@ -2070,6 +2131,7 @@ window.APP_CONFIG = Object.freeze({
         if (!conf) return;
         U.busy(btn, true, 'Registrando...');
         try {
+          await gravarAjuste();
           const res = await U.rpc('pagar_juros_acumular', {
             p_parcela_id: p.id, p_valor: valor, p_data_pagamento: form.data.value, p_forma: form.forma.value,
             p_observacoes: form.observacoes.value.trim() || null,
@@ -2106,6 +2168,7 @@ window.APP_CONFIG = Object.freeze({
       U.busy(btn, true, 'Registrando...');
       try {
         let res;
+        await gravarAjuste();
         try {
           res = await U.rpc(fn, params);
         } catch (err) {
