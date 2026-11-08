@@ -508,8 +508,8 @@ window.APP_CONFIG = Object.freeze({
       const msg = err.message || String(err);
       if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) return 'Falha de conexão com o servidor. Verifique sua internet e tente novamente.';
       if (code === 'PGRST301' || /JWT expired/i.test(msg)) return 'Sua sessão expirou. Faça login novamente.';
-      if (code === 'PGRST202') return 'Função não encontrada no banco. Verifique se o arquivo schema.sql foi executado.';
-      if (code === '42P01' || code === 'PGRST205') return 'Estrutura do banco não encontrada. Execute o arquivo schema.sql.';
+      if (code === 'PGRST202') return 'Função não encontrada no banco. Verifique se o arquivo tabela completa.sql foi executado.';
+      if (code === '42P01' || code === 'PGRST205') return 'Estrutura do banco não encontrada. Execute o arquivo tabela completa.sql.';
       if (code === '42501' && /permission denied|row-level security/i.test(msg)) return 'Você não tem permissão para esta operação.';
       if (code === '23505') return /cpf/i.test(msg) ? 'Já existe um cliente com este CPF.' : 'Registro duplicado.';
       if (code === '23514' && /violates check constraint/i.test(msg)) return 'Dados inválidos: verifique os campos informados.';
@@ -766,11 +766,35 @@ window.APP_CONFIG = Object.freeze({
       return `https://wa.me/55${d}?text=${encodeURIComponent(mensagem)}`;
     },
 
+    /** Nomes dos clientes (para as listas suspensas de busca). Carregado uma vez por tela. */
+    nomesCache: null,
+    nomesClientes() {
+      if (!U.nomesCache) {
+        U.nomesCache = Auth.client.from('clientes').select('nome').is('anonimizado_em', null).order('nome').limit(3000)
+          .then(({ data, error }) => (error ? [] : [...new Set((data || []).map((c) => c.nome))]))
+          .catch(() => []);
+      }
+      return U.nomesCache;
+    },
+    /** Preenche um <datalist> com os nomes dos clientes: o campo mostra a lista e continua aceitando digitação. */
+    async preencherNomes(datalist) {
+      if (!datalist) return;
+      const nomes = await U.nomesClientes();
+      datalist.innerHTML = nomes.map((n) => `<option value="${U.esc(n)}"></option>`).join('');
+    },
+
     /** Mensagem de WhatsApp com o link do comprovante (um ou vários pagamentos do mesmo contrato). */
     mensagemComprovante({ cliente, pagamentos, link }) {
       const nome = String(cliente.nome || '').split(' ')[0];
       const g = pagamentos[0];
       const total = pagamentos.reduce((a, x) => a + Number(x.valor), 0);
+      if (pagamentos.length === 1 && g.tipo === 'prorrogacao') {
+        return `Olá, ${nome}! Confirmamos o recebimento dos juros.\n\n` +
+          `• Contrato nº ${g.contrato_numero} — parcela ${g.parcela_numero}/${g.qtd_parcelas}\n` +
+          `• Juros pagos: ${U.money(g.valor)}\n• Data: ${U.date(g.data_pagamento)}\n` +
+          `• Novo vencimento da parcela: ${U.date(g.parcela_vencimento)} (as parcelas seguintes também foram prorrogadas)\n\n` +
+          `Seu comprovante:\n${link}\n\nObrigado!`;
+      }
       const corpo = pagamentos.length === 1
         ? `• Contrato nº ${g.contrato_numero} — parcela ${g.parcela_numero}/${g.qtd_parcelas}\n` +
           `• Valor pago: ${U.money(g.valor)}\n• Data: ${U.date(g.data_pagamento)}\n\n` +
@@ -854,7 +878,8 @@ window.APP_CONFIG = Object.freeze({
       }).join('');
       o.container.innerHTML = `
         <div class="table-toolbar">
-          ${o.search ? `<div class="search">${U.icon('search')}<input type="search" placeholder="${U.esc(o.searchPlaceholder)}" aria-label="Buscar" maxlength="60"></div>` : ''}
+          ${o.search ? `<div class="search">${U.icon('search')}<input type="search" placeholder="${U.esc(o.searchPlaceholder)}" aria-label="Buscar" maxlength="60"
+              ${o.sugerirNomes ? 'list="dl-nomes-busca" autocomplete="off"' : ''}>${o.sugerirNomes ? '<datalist id="dl-nomes-busca"></datalist>' : ''}</div>` : ''}
           ${filtersHTML}
           <div class="spacer"></div>
           ${o.toolbarRight || ''}
@@ -868,6 +893,7 @@ window.APP_CONFIG = Object.freeze({
       this.pager = o.container.querySelector('.pagination');
 
       const search = o.container.querySelector('.table-toolbar input[type=search]');
+      if (search && o.sugerirNomes) U.preencherNomes(o.container.querySelector('#dl-nomes-busca'));
       if (search) {
         search.addEventListener('input', U.debounce(() => { this.search = search.value.trim(); this.page = 1; this.load(); }));
       }
@@ -1191,6 +1217,200 @@ window.APP_CONFIG = Object.freeze({
     await carregar();
   }
 
+  // ---------------------------------------------------------------- autocadastro do cliente (index.html#cadastro?t=TOKEN)
+  const DOCS_CADASTRO = [
+    { tipo: 'rg', label: 'Foto do RG (frente e verso)', accept: 'image/*,application/pdf', max: 2, hint: 'Envie até 2 arquivos: frente e verso.' },
+    { tipo: 'fachada', label: 'Foto da frente da casa', accept: 'image/*', max: 1, hint: 'Foto tirada da rua, mostrando a fachada e o número.' },
+    { tipo: 'holerite', label: 'Último holerite', accept: 'image/*,application/pdf', max: 2, hint: 'Foto ou PDF do comprovante de renda mais recente.' },
+    { tipo: 'comprovante_residencia', label: 'Comprovante de residência', accept: 'image/*,application/pdf', max: 1, hint: 'Conta de luz, água, telefone ou similar (recente).' },
+  ];
+
+  /** Reduz fotos para no máximo 1600 px em JPEG (~200–500 KB); PDFs seguem como estão. */
+  async function prepararArquivo(file) {
+    if (file.type === 'application/pdf') {
+      if (file.size > 10 * 1024 * 1024) throw new Error(`O PDF "${file.name}" passa de 10 MB.`);
+      return { blob: file, ext: 'pdf', mime: 'application/pdf' };
+    }
+    if (!/^image\//.test(file.type)) throw new Error(`Formato não aceito em "${file.name}". Envie foto (JPG/PNG) ou PDF.`);
+    let bmp;
+    try {
+      bmp = await createImageBitmap(file);
+    } catch (_) {
+      throw new Error(`Não foi possível ler a imagem "${file.name}". Tire a foto novamente ou envie em JPG.`);
+    }
+    const escala = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bmp.width * escala);
+    canvas.height = Math.round(bmp.height * escala);
+    canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.82));
+    if (!blob) throw new Error(`Não foi possível processar a imagem "${file.name}".`);
+    return { blob, ext: 'jpg', mime: 'image/jpeg' };
+  }
+
+  async function telaCadastro(token) {
+    ['auth-screen', 'tests-screen'].forEach((id) => { const e = document.getElementById(id); if (e) e.remove(); });
+    const root = document.getElementById('public-screen');
+    root.classList.remove('hidden');
+    document.body.classList.remove('auth-pending');
+    document.title = `Cadastro — ${cfg.APP_NAME || 'CrediGestor'}`;
+    const esc = U.esc;
+    const falha = (msg) => { root.innerHTML = `<div class="public-wrap"><div class="card">${U.errorHTML(msg, false)}</div></div>`; };
+    if (Auth.problem) { falha('Sistema temporariamente indisponível. Tente novamente mais tarde.'); return; }
+    if (!/^[0-9a-f]{64}$/.test(token)) { falha('Link de cadastro inválido. Confira se copiou o endereço completo.'); return; }
+    root.innerHTML = `<div class="public-wrap">${U.loadingHTML('Carregando...')}</div>`;
+    let cv;
+    try {
+      cv = await U.rpc('obter_convite', { p_token: token });
+    } catch (err) {
+      falha(U.errorMessage(err));
+      return;
+    }
+    const ufs = 'AC AL AP AM BA CE DF ES GO MA MT MS MG PA PB PR PE PI RJ RN RS RO RR SC SP SE TO'.split(' ');
+    root.innerHTML = `<div class="public-wrap">
+      <header class="public-header"><span class="brand-mark">₢</span>
+        <div><h1 class="mb-0">${esc(cv.organizacao)}</h1><div class="muted">Cadastro de cliente</div></div></header>
+      <div class="alert alert-info">Preencha seus dados e envie os documentos. Tenha em mãos: <strong>RG</strong>, uma
+        <strong>foto da frente da sua casa</strong>, o <strong>último holerite</strong> e um <strong>comprovante de residência</strong>.
+        Este link é pessoal e vale até ${esc(U.datetime(cv.expira_em))}.</div>
+      <form id="form-cadastro" novalidate>
+        <section class="card mb-2"><div class="card-header"><h2>Seus dados</h2></div><div class="card-body"><div class="form-grid">
+          <div class="field full"><label for="cd-nome">Nome completo <span class="req">*</span></label>
+            <input type="text" id="cd-nome" name="nome" autocomplete="name" maxlength="150" value="${esc(cv.nome || '')}"><span class="error-msg"></span></div>
+          <div class="field"><label for="cd-rg">RG <span class="req">*</span></label>
+            <input type="text" id="cd-rg" name="rg" maxlength="20" autocomplete="off"><span class="error-msg"></span></div>
+          <div class="field"><label for="cd-cpf">CPF <span class="req">*</span></label>
+            <input type="text" id="cd-cpf" name="cpf" inputmode="numeric" maxlength="14" autocomplete="off"><span class="error-msg"></span></div>
+          <div class="field"><label for="cd-nasc">Data de nascimento <span class="req">*</span></label>
+            <input type="date" id="cd-nasc" name="nascimento" max="${U.today()}"><span class="error-msg"></span></div>
+          <div class="field"><label for="cd-tel">Telefone (WhatsApp) <span class="req">*</span></label>
+            <input type="text" id="cd-tel" name="telefone" inputmode="tel" maxlength="16" autocomplete="tel"
+              value="${esc(cv.telefone ? U.formatPhone(cv.telefone) : '')}" placeholder="(00) 00000-0000"><span class="error-msg"></span></div>
+          <div class="field full"><label for="cd-email">E-mail</label>
+            <input type="email" id="cd-email" name="email" maxlength="150" autocomplete="email"><span class="error-msg"></span></div>
+        </div></div></section>
+
+        <section class="card mb-2"><div class="card-header"><h2>Endereço</h2></div><div class="card-body"><div class="form-grid form-grid-3">
+          <div class="field"><label for="cd-cep">CEP <span class="req">*</span></label>
+            <input type="text" id="cd-cep" name="cep" inputmode="numeric" maxlength="9" autocomplete="postal-code"><span class="error-msg"></span></div>
+          <div class="field" style="grid-column: span 2"><label for="cd-rua">Rua / Avenida <span class="req">*</span></label>
+            <input type="text" id="cd-rua" name="rua" maxlength="120" autocomplete="address-line1"><span class="error-msg"></span></div>
+          <div class="field"><label for="cd-num">Número <span class="req">*</span></label>
+            <input type="text" id="cd-num" name="numero" maxlength="10"><span class="error-msg"></span></div>
+          <div class="field"><label for="cd-comp">Complemento</label>
+            <input type="text" id="cd-comp" name="complemento" maxlength="60" autocomplete="address-line2"></div>
+          <div class="field"><label for="cd-bairro">Bairro <span class="req">*</span></label>
+            <input type="text" id="cd-bairro" name="bairro" maxlength="80"><span class="error-msg"></span></div>
+          <div class="field" style="grid-column: span 2"><label for="cd-cidade">Cidade <span class="req">*</span></label>
+            <input type="text" id="cd-cidade" name="cidade" maxlength="80" autocomplete="address-level2"><span class="error-msg"></span></div>
+          <div class="field"><label for="cd-uf">UF <span class="req">*</span></label>
+            <select id="cd-uf" name="uf"><option value="">—</option>${ufs.map((u) => `<option>${u}</option>`).join('')}</select><span class="error-msg"></span></div>
+        </div></div></section>
+
+        <section class="card mb-2"><div class="card-header"><h2>Documentos</h2><span class="small muted">Fotos ou PDF · as fotos são reduzidas automaticamente</span></div>
+          <div class="card-body"><div class="doc-inputs">
+          ${DOCS_CADASTRO.map((d) => `<div class="field doc-input" data-tipo="${d.tipo}">
+            <label for="cd-doc-${d.tipo}">${esc(d.label)} <span class="req">*</span></label>
+            <input type="file" id="cd-doc-${d.tipo}" name="doc_${d.tipo}" accept="${d.accept}" ${d.max > 1 ? 'multiple' : ''}>
+            <span class="hint">${esc(d.hint)}</span><div class="doc-previews"></div><span class="error-msg"></span></div>`).join('')}
+          </div></div></section>
+
+        <section class="card mb-2"><div class="card-body">
+          <div class="field"><label for="cd-indicacao">Quem indicou você?</label>
+            <input type="text" id="cd-indicacao" name="indicacao" maxlength="150" placeholder="Nome de quem indicou (se houver)"></div>
+          <div class="field mt-2"><label class="checkbox"><input type="checkbox" name="aceite">
+            <span>Autorizo ${esc(cv.organizacao)} a tratar meus dados pessoais e documentos para análise de crédito, cadastro e
+            cobrança, conforme a LGPD. Declaro que as informações e documentos enviados são verdadeiros. <span class="req">*</span></span></label>
+            <span class="error-msg"></span></div>
+          <div class="small muted mt-1" id="cd-status" aria-live="polite"></div>
+          <button type="submit" class="btn btn-primary mt-2" style="width:100%">Enviar cadastro</button>
+        </div></section>
+      </form>
+    </div>`;
+
+    const form = root.querySelector('#form-cadastro');
+    const status = root.querySelector('#cd-status');
+    form.cpf.addEventListener('blur', () => { if (form.cpf.value) form.cpf.value = U.formatCPF(form.cpf.value); });
+    form.telefone.addEventListener('blur', () => { if (U.digits(form.telefone.value)) form.telefone.value = U.formatPhone(form.telefone.value); });
+    form.cep.addEventListener('blur', () => { const d = U.digits(form.cep.value); if (d.length === 8) form.cep.value = `${d.slice(0, 5)}-${d.slice(5)}`; });
+    // Pré-visualização das fotos escolhidas.
+    form.querySelectorAll('.doc-input input[type=file]').forEach((inp) => inp.addEventListener('change', () => {
+      const box = inp.closest('.doc-input').querySelector('.doc-previews');
+      box.querySelectorAll('img').forEach((img) => URL.revokeObjectURL(img.src));
+      box.innerHTML = [...inp.files].map((f) => /^image\//.test(f.type)
+        ? `<img src="${URL.createObjectURL(f)}" alt="${esc(f.name)}">` : `<span class="badge">${esc(f.name)}</span>`).join('');
+    }));
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      U.clearErrors(form);
+      const v = (n) => form[n].value.trim();
+      let ok = true;
+      const erro = (n, m) => { U.fieldError(form, n, m); ok = false; };
+      const nome = v('nome').replace(/\s+/g, ' ');
+      if (nome.length < 5 || !nome.includes(' ')) erro('nome', 'Informe seu nome completo.');
+      if (v('rg').length < 4) erro('rg', 'Informe o RG.');
+      if (!U.validCPF(v('cpf'))) erro('cpf', 'CPF inválido.');
+      const nasc = form.nascimento.value;
+      const hoje = U.today();
+      const maior = nasc && Number(hoje.slice(0, 4)) - Number(nasc.slice(0, 4)) - (hoje.slice(5) < nasc.slice(5) ? 1 : 0) >= 18;
+      if (!nasc) erro('nascimento', 'Informe a data de nascimento.');
+      else if (!maior) erro('nascimento', 'É preciso ter 18 anos ou mais.');
+      const tel = U.digits(v('telefone'));
+      if (tel.length < 10 || tel.length > 11) erro('telefone', 'Informe o telefone com DDD.');
+      if (v('email') && !U.validEmail(v('email'))) erro('email', 'E-mail inválido.');
+      if (U.digits(v('cep')).length !== 8) erro('cep', 'CEP inválido.');
+      ['rua', 'numero', 'bairro', 'cidade'].forEach((n) => { if (!v(n)) erro(n, 'Obrigatório.'); });
+      if (!form.uf.value) erro('uf', 'Selecione.');
+      const arquivos = [];
+      DOCS_CADASTRO.forEach((d) => {
+        const files = [...form[`doc_${d.tipo}`].files];
+        if (!files.length) erro(`doc_${d.tipo}`, 'Envie este documento.');
+        else if (files.length > d.max) erro(`doc_${d.tipo}`, `Envie no máximo ${d.max} arquivo(s).`);
+        else if (files.some((f) => f.size > 25 * 1024 * 1024)) erro(`doc_${d.tipo}`, 'Arquivo muito grande (máximo 25 MB).');
+        else files.forEach((f) => arquivos.push({ tipo: d.tipo, file: f }));
+      });
+      if (!form.aceite.checked) erro('aceite', 'É necessário autorizar para enviar o cadastro.');
+      if (!ok) { U.focusFirstError(form); U.toast('Confira os campos destacados.', 'error'); return; }
+
+      const endereco = [`${v('rua')}, ${v('numero')}`, v('complemento'), v('bairro'), `${v('cidade')}/${form.uf.value}`,
+        `CEP ${U.digits(v('cep')).replace(/^(\d{5})(\d{3})$/, '$1-$2')}`].filter(Boolean).join(' - ');
+      const btn = form.querySelector('button[type=submit]');
+      U.busy(btn, true, 'Enviando...');
+      try {
+        const documentos = [];
+        for (let i = 0; i < arquivos.length; i++) {
+          const { tipo, file } = arquivos[i];
+          status.textContent = `Enviando documento ${i + 1} de ${arquivos.length}...`;
+          const prep = await prepararArquivo(file);
+          const path = `${cv.convite_id}/${tipo}-${crypto.randomUUID()}.${prep.ext}`;
+          const { error } = await Auth.client.storage.from('documentos').upload(path, prep.blob, { contentType: prep.mime, upsert: false });
+          if (error) {
+            throw new Error(/row-level security|unauthorized|403/i.test(error.message || '')
+              ? 'Não foi possível enviar os arquivos: o link expirou ou já foi usado.'
+              : `Falha ao enviar "${file.name}": ${error.message}`);
+          }
+          documentos.push({ tipo, path, nome: file.name, mime: prep.mime, tamanho: prep.blob.size });
+        }
+        status.textContent = 'Finalizando cadastro...';
+        await U.rpc('concluir_cadastro', {
+          p_token: token, p_nome: nome, p_rg: v('rg'), p_cpf: U.digits(v('cpf')), p_data_nascimento: nasc,
+          p_telefone: tel, p_email: v('email') || null, p_endereco: endereco, p_indicado_por: v('indicacao') || null,
+          p_documentos: documentos, p_aceite: true,
+        });
+        root.innerHTML = `<div class="public-wrap"><div class="card"><div class="state">${U.icon('check')}
+          <div class="state-title">Cadastro enviado com sucesso!</div>
+          <div>Obrigado, ${esc(nome.split(' ')[0])}. ${esc(cv.organizacao)} vai analisar seus dados e documentos e entrará em contato.</div>
+          </div></div></div>`;
+        window.scrollTo(0, 0);
+      } catch (err) {
+        status.textContent = '';
+        U.busy(btn, false);
+        U.toast(U.errorMessage(err), 'error', 10000);
+      }
+    });
+  }
+
   // ---------------------------------------------------------------- comprovante do cliente (index.html#comprovante?t=TOKEN)
   async function telaComprovante(token) {
     ['auth-screen', 'tests-screen'].forEach((id) => { const e = document.getElementById(id); if (e) e.remove(); });
@@ -1256,6 +1476,7 @@ window.APP_CONFIG = Object.freeze({
     document.querySelectorAll('dialog').forEach((d) => (d._fechar ? d._fechar() : d.remove()));
     U.charts.forEach((c) => c.destroy());
     U.charts.clear();
+    U.nomesCache = null; // recarrega a lista de nomes a cada tela (novos clientes aparecem)
     document.body.dataset.page = id;
     document.title = `${page.title} — ${cfg.APP_NAME || 'CrediGestor'}`;
     document.querySelector('.topbar-title').textContent = page.title;
@@ -1318,6 +1539,10 @@ window.APP_CONFIG = Object.freeze({
       const hash = location.hash;
       if (hash.startsWith('#assinar')) { // página pública de assinatura (sem login)
         await telaAssinatura(new URLSearchParams(hash.split('?')[1] || '').get('t') || '');
+        return;
+      }
+      if (hash.startsWith('#cadastro')) { // página pública de autocadastro (sem login)
+        await telaCadastro(new URLSearchParams(hash.split('?')[1] || '').get('t') || '');
         return;
       }
       if (hash.startsWith('#comprovante')) { // página pública do comprovante (sem login)
@@ -1476,15 +1701,14 @@ window.APP_CONFIG = Object.freeze({
     const r = periodRate(i, p.frequencia);
     const N = BigInt(n);
     let pmt = 0n;
-    if (p.sistema === 'PRICE') {
-      if (r === 0n) {
-        pmt = divRound(P, N);
-      } else {
-        // PMT = P·r·(1+r)^n / ((1+r)^n − 1), com potências inteiras exatas.
-        const F = (RATE_SCALE + r) ** N;
-        const Dn = RATE_SCALE ** N;
-        pmt = divRound(P * r * F, RATE_SCALE * (F - Dn));
-      }
+    const fixa = p.parcelaFixa !== undefined && p.parcelaFixa !== null && p.parcelaFixa !== '';
+    if (fixa) {
+      // Parcela informada pelo usuário (Price): a última parcela ajusta os centavos.
+      if (p.sistema !== 'PRICE') throw new Error('Parcela fixa só é permitida no sistema Price.');
+      pmt = toCents(p.parcelaFixa);
+      if (pmt <= divRound(P * r, RATE_SCALE)) throw new Error('O valor da parcela não cobre os juros do primeiro período.');
+    } else if (p.sistema === 'PRICE') {
+      pmt = pmtPrice(P, r, N);
     }
 
     const rows = [];
@@ -1498,6 +1722,7 @@ window.APP_CONFIG = Object.freeze({
         amort = pmt - juros;
         if (amort < 0n) amort = 0n;
         if (amort > saldo) amort = saldo;
+        if (fixa && amort >= saldo) throw new Error('Valor da parcela alto demais: o empréstimo seria quitado antes da última parcela.');
       } else {
         amort = divRound(P * K, N) - divRound(P * (K - 1n), N);
       }
@@ -1527,6 +1752,39 @@ window.APP_CONFIG = Object.freeze({
     };
     if (p.dataContratacao) result.cetMensal = cetMensal(P, p.dataContratacao, rows);
     return result;
+  }
+
+  /** PMT = P·r·(1+r)^n / ((1+r)^n − 1), com potências inteiras exatas (centavos, taxa 1e8). */
+  function pmtPrice(P, r, N) {
+    if (r === 0n) return divRound(P, N);
+    const F = (RATE_SCALE + r) ** N;
+    const Dn = RATE_SCALE ** N;
+    return divRound(P * r * F, RATE_SCALE * (F - Dn));
+  }
+
+  /**
+   * Taxa mensal (% com até 6 casas) que faz a parcela Price ficar no valor desejado.
+   * p: principal, parcelas, frequencia, encargos; valorParcela: valor total desejado da parcela (com encargos).
+   * Retorna { taxaMensalPct, parcelaFixa } — parcelaFixa é a parte sem encargos, para enviar ao banco.
+   */
+  function taxaParaParcela(p, valorParcela) {
+    const P = toCents(p.principal);
+    const n = Number(p.parcelas);
+    const N = BigInt(n);
+    const E = p.encargos ? toCents(p.encargos) : 0n;
+    const alvo = toCents(valorParcela) - divRound(E, N);   // encargos da 1ª parcela
+    const minimo = divRound(P, N);
+    if (alvo < minimo) throw new Error(`O valor da parcela não pode ser menor que ${centsToString(minimo + divRound(E, N)).replace('.', ',')} (parcela sem juros).`);
+    let lo = 0n;
+    let hi = RATE_SCALE - 1n;
+    const pmtDe = (R) => pmtPrice(P, periodRate(R, p.frequencia), N);
+    if (pmtDe(hi) < alvo) throw new Error('Valor da parcela alto demais para esse prazo.');
+    while (lo < hi) {               // menor taxa cuja parcela atinge o alvo
+      const mid = (lo + hi) / 2n;
+      if (pmtDe(mid) >= alvo) hi = mid; else lo = mid + 1n;
+    }
+    const R = lo > 0n && alvo - pmtDe(lo - 1n) < pmtDe(lo) - alvo ? lo - 1n : lo;
+    return { taxaMensalPct: formatScaled(R, 6), parcelaFixa: centsToString(alvo) };
   }
 
   /** CET mensal (TIR, base 30 dias) por bisseção — informativo. */
@@ -1626,7 +1884,7 @@ window.APP_CONFIG = Object.freeze({
     RATE_SCALE, FREQ_DIAS, SISTEMAS,
     divRound, parseDecimal, formatScaled, toCents, centsToString, rateFromPercent, rateToString,
     periodRate, addMonths, addDays, diffDays, dueDate, defaultFirstDue,
-    schedule, cetMensal, annualFromMonthly, allocatePayment,
+    schedule, cetMensal, annualFromMonthly, allocatePayment, pmtPrice, taxaParaParcela,
     numeroPorExtenso, valorPorExtenso, dataPorExtenso,
   };
 });
@@ -1673,8 +1931,14 @@ window.APP_CONFIG = Object.freeze({
           <div class="summary-item"><div class="label">Saldo</div><div class="value">${money(saldo)}</div></div>
         </div>
         <form id="form-pagamento" novalidate>
+          <div class="quit-opcoes mb-2">
+            <label class="quit-opcao"><input type="radio" name="modo" value="parcela" checked>
+              <div><strong>Pagar a parcela</strong><div class="small muted">Valor total ou parcial da parcela.</div></div></label>
+            <label class="quit-opcao"><input type="radio" name="modo" value="juros">
+              <div><strong>Pagar só os juros</strong><div class="small muted">Cliente paga os juros agora; esta parcela e as seguintes vão para o período seguinte.</div></div></label>
+          </div>
           <div class="form-grid">
-            <div class="field"><label for="pg-valor">Valor recebido (R$) <span class="req">*</span></label>
+            <div class="field"><label for="pg-valor" id="pg-valor-label">Valor recebido (R$) <span class="req">*</span></label>
               <input type="text" id="pg-valor" name="valor" inputmode="decimal" value="${esc(U.moneyInput(saldo))}">
               <span class="hint" id="pg-aloc"></span><span class="error-msg"></span></div>
             <div class="field"><label for="pg-data">Data efetiva do pagamento <span class="req">*</span></label>
@@ -1693,11 +1957,21 @@ window.APP_CONFIG = Object.freeze({
     const form = m.el.querySelector('form');
     const aloc = m.el.querySelector('#pg-aloc');
     const atraso = m.el.querySelector('#pg-atraso');
+    const soJuros = () => form.modo.value === 'juros';
     const update = () => {
-      aloc.innerHTML = allocationPreview(p, U.parseMoney(form.valor.value));
+      aloc.innerHTML = soJuros()
+        ? 'Os juros entram no caixa; o saldo da parcela não muda e ela (com as seguintes) passa a vencer um período depois.'
+        : allocationPreview(p, U.parseMoney(form.valor.value));
       const d = form.data.value && F ? F.diffDays(p.vencimento, form.data.value) : 0;
       atraso.innerHTML = d > 0 ? `<span class="text-warning">Pagamento ${d} dia(s) após o vencimento.</span>` : '';
     };
+    form.querySelectorAll('input[name=modo]').forEach((r) => r.addEventListener('change', () => {
+      form.valor.value = U.moneyInput(soJuros() ? String(p.valor_juros) : saldo);
+      m.el.querySelector('#pg-valor-label').innerHTML = `${soJuros() ? 'Valor dos juros (R$)' : 'Valor recebido (R$)'} <span class="req">*</span>`;
+      m.el.querySelector('button[type=submit]').textContent = soJuros() ? 'Receber juros e prorrogar' : 'Confirmar recebimento';
+      update();
+      form.valor.select();
+    }));
     form.valor.addEventListener('input', update);
     form.data.addEventListener('change', update);
     form.valor.addEventListener('blur', () => { const v = U.parseMoney(form.valor.value); if (v) form.valor.value = U.moneyInput(v); });
@@ -1710,12 +1984,39 @@ window.APP_CONFIG = Object.freeze({
       const valor = U.parseMoney(form.valor.value);
       let ok = true;
       if (!valor || F.toCents(valor) <= 0n) { U.fieldError(form, 'valor', 'Informe um valor maior que zero.'); ok = false; }
-      else if (F.toCents(valor) > F.toCents(saldo)) { U.fieldError(form, 'valor', `Valor acima do saldo (${money(saldo)}).`); ok = false; }
+      else if (!soJuros() && F.toCents(valor) > F.toCents(saldo)) { U.fieldError(form, 'valor', `Valor acima do saldo (${money(saldo)}).`); ok = false; }
       if (!form.data.value) { U.fieldError(form, 'data', 'Informe a data.'); ok = false; }
       else if (form.data.value > U.today()) { U.fieldError(form, 'data', 'A data não pode ser futura.'); ok = false; }
       if (!ok) { U.focusFirstError(form); return; }
 
       const btn = m.el.querySelector('button[type=submit]');
+      if (soJuros()) {
+        const conf = await U.confirm({
+          title: 'Pagar só os juros',
+          html: true,
+          message: `<p>Registrar <strong>${money(valor)}</strong> de juros da parcela ${p.numero}/${p.qtd_parcelas} do contrato nº ${esc(p.contrato_numero)}?</p>
+            <p class="small muted">O saldo da parcela continua o mesmo. Esta parcela e todas as seguintes passam a vencer um período depois
+            (o contrato termina um período mais tarde).</p>`,
+          confirmText: 'Receber juros e prorrogar',
+        });
+        if (!conf) return;
+        U.busy(btn, true, 'Registrando...');
+        try {
+          const res = await U.rpc('pagar_juros_prorrogar', {
+            p_parcela_id: p.id, p_valor: valor, p_data_pagamento: form.data.value, p_forma: form.forma.value,
+            p_observacoes: form.observacoes.value.trim() || null,
+          });
+          m.close();
+          U.toast(`Juros recebidos (recibo nº ${res.numero_recibo}). A parcela passou a vencer em ${date(res.novo_vencimento)}.`, 'success', 9000);
+          if (onDone) onDone(res);
+          openReceipt(res.id, { aposPagamento: true });
+        } catch (err) {
+          U.busy(btn, false);
+          U.toast(U.errorMessage(err), 'error', 9000);
+        }
+        return;
+      }
+
       const params = {
         p_parcela_id: p.id, p_valor: valor, p_data_pagamento: form.data.value, p_forma: form.forma.value,
         p_observacoes: form.observacoes.value.trim() || null, p_confirmar_duplicidade: false,
@@ -1757,7 +2058,7 @@ window.APP_CONFIG = Object.freeze({
       size: 'lg',
       body: `<form id="form-sel" novalidate><div class="form-grid">
           <div class="field full"><label for="sel-busca">Contrato</label>
-            <input type="search" id="sel-busca" placeholder="Digite o nº do contrato ou o nome do cliente" autocomplete="off">
+            <input type="search" id="sel-busca" placeholder="Digite o nº do contrato ou o nome do cliente" autocomplete="off" list="dl-nomes-pag"><datalist id="dl-nomes-pag"></datalist>
             <select id="sel-contrato" name="contrato" class="mt-1"><option value="">Digite para buscar contratos ativos</option></select>
             <span class="error-msg"></span></div>
           <div class="field full"><label for="sel-parcela">Parcela</label>
@@ -1801,6 +2102,7 @@ window.APP_CONFIG = Object.freeze({
       }
     });
     m.el.querySelector('#sel-busca').addEventListener('input', (e) => search(e.target.value));
+    U.preencherNomes(m.el.querySelector('#dl-nomes-pag'));
 
     selC.addEventListener('change', async () => {
       btnQuitar.disabled = !selC.value;
@@ -1840,7 +2142,9 @@ window.APP_CONFIG = Object.freeze({
       <dt>Recibo</dt><dd>nº ${esc(g.numero_recibo)} · parcela ${g.parcela_numero}/${g.qtd_parcelas} do contrato nº ${esc(g.contrato_numero)}</dd>
       <dt>Valor pago</dt><dd><strong>${money(g.valor)}</strong> em ${date(g.data_pagamento)} · ${esc(U.LABELS.forma[g.forma])}</dd>
       <dt>Composição</dt><dd>Principal ${money(g.valor_principal)} · Juros ${money(g.valor_juros)} · Encargos ${money(g.valor_encargos)}</dd>
-      ${dispensa ? `<dt>Juros dispensados</dt><dd>${money(parcela.juros_dispensados)} (quitação sem juros)</dd>` : ''}
+      ${g.tipo === 'prorrogacao' ? `<dt>Tipo</dt><dd><strong>Pagamento só dos juros.</strong> O saldo da parcela não mudou e ela foi
+        prorrogada${parcela ? ` — vencimento atual: <strong>${date(parcela.vencimento)}</strong>` : ''}.</dd>` : ''}
+      ${dispensa ? `<dt>Desconto concedido</dt><dd>${money(parcela.juros_dispensados)} (quitação do contrato)</dd>` : ''}
       ${publico ? '' : `<dt>Registrado por</dt><dd>${esc(g.registrado_por_nome || '—')} em ${esc(U.datetime(g.created_at))}</dd>`}
       ${!publico && g.observacoes ? `<dt>Observações</dt><dd>${esc(g.observacoes)}</dd>` : ''}
       ${g.status === 'estornado' ? `<dt>Estorno</dt><dd class="text-danger">Pagamento estornado em ${esc(U.datetime(g.estornado_em))}${
@@ -1854,6 +2158,7 @@ window.APP_CONFIG = Object.freeze({
     if (!parcela) return reciboSimples(g);
     const devido = Number(parcela.valor) - Number(parcela.juros_dispensados || 0);
     const [rotulo, tipo] = g.status === 'estornado' ? ['ESTORNADO', 'estornado']
+      : g.tipo === 'prorrogacao' ? ['JUROS PAGOS', 'parcial']
       : Number(g.valor) >= devido - 0.005 ? ['PAGO', 'pago'] : ['PAGO PARCIAL', 'parcial'];
     return `<div class="comprovante">
       <div class="np-pago-wrap">${U.notaPromissoria(notas, parcela)}
@@ -1946,19 +2251,30 @@ window.APP_CONFIG = Object.freeze({
     const soma = (fn) => parcelas.reduce((a, p) => a + fn(p), 0n);
     const saldo = soma((p) => F.toCents(p.saldo));
     const juros = soma((p) => F.toCents(p.valor_juros) - F.toCents(p.pago_juros));
-    const semJuros = saldo - juros;
-    const podeSemJuros = Auth.can('contratos.write');
+    const principal = soma((p) => F.toCents(p.valor_principal) - F.toCents(p.pago_principal));
+    const maxDesconto = juros + principal;
+    const podeDesconto = Auth.can('contratos.write');
     m.body.innerHTML = `
       <p><strong>${esc(c.cliente_nome)}</strong> · ${parcelas.length} parcela(s) em aberto.
         Cada parcela recebe o seu próprio recibo e a nota promissória correspondente é carimbada como paga.</p>
+      <div class="summary-grid">
+        <div class="summary-item"><div class="label">Saldo total (com juros)</div><div class="value">${money(saldo)}</div></div>
+        <div class="summary-item"><div class="label">Juros em aberto</div><div class="value">${money(juros)}</div></div>
+        <div class="summary-item"><div class="label">Principal em aberto</div><div class="value">${money(principal)}</div></div>
+      </div>
       <form id="form-quitar" novalidate>
-        <div class="quit-opcoes">
-          <label class="quit-opcao"><input type="radio" name="modo" value="com_juros" checked>
-            <div><strong>Com juros</strong><div class="quit-valor">${money(saldo)}</div>
-            <span class="small muted">Paga o saldo total das parcelas em aberto.</span></div></label>
-          <label class="quit-opcao ${podeSemJuros ? '' : 'quit-desabilitada'}"><input type="radio" name="modo" value="sem_juros" ${podeSemJuros ? '' : 'disabled'}>
-            <div><strong>Sem juros</strong><div class="quit-valor">${money(semJuros)}</div>
-            <span class="small muted">Dispensa ${money(juros)} de juros ainda não pagos.${podeSemJuros ? '' : ' Somente administrador ou gestor.'}</span></div></label>
+        <div class="form-grid">
+          <div class="field"><label for="q-desc">Desconto (R$)</label>
+            <input type="text" id="q-desc" name="desconto" inputmode="decimal" value="0,00" ${podeDesconto ? '' : 'readonly'}>
+            <div class="btn-group mt-1">
+              <button type="button" class="btn btn-sm" data-desc="0" ${podeDesconto ? '' : 'disabled'}>Sem desconto</button>
+              <button type="button" class="btn btn-sm" data-desc="juros" ${podeDesconto ? '' : 'disabled'}>Tirar todos os juros (${money(juros)})</button>
+            </div>
+            <span class="hint">${podeDesconto ? 'Aplicado primeiro sobre os juros e depois sobre o principal.' : 'Somente administrador ou gestor pode dar desconto.'}</span>
+            <span class="error-msg"></span></div>
+          <div class="field"><label for="q-valor">Valor a receber (R$) <span class="req">*</span></label>
+            <input type="text" id="q-valor" name="valor" inputmode="decimal" class="sim-input" value="${esc(U.moneyInput(F.centsToString(saldo)))}" ${podeDesconto ? '' : 'readonly'}>
+            <span class="hint">Pode digitar o valor combinado: o desconto é calculado sozinho.</span><span class="error-msg"></span></div>
         </div>
         <div class="form-grid mt-2">
           <div class="field"><label for="q-data">Data do pagamento <span class="req">*</span></label>
@@ -1982,19 +2298,42 @@ window.APP_CONFIG = Object.freeze({
       <button type="submit" form="form-quitar" class="btn btn-success">Confirmar quitação</button>`;
     m.el.querySelector('.modal-inner').appendChild(footer);
     const form = m.el.querySelector('form');
+    // Desconto e valor a receber ficam sempre sincronizados (valor = saldo − desconto).
+    const centsDe = (txt) => { const v = U.parseMoney(txt); return v === null ? null : F.toCents(v); };
+    const porDesconto = () => {
+      const d = centsDe(form.desconto.value);
+      if (d !== null) form.valor.value = U.moneyInput(F.centsToString(saldo - d > 0n ? saldo - d : 0n));
+    };
+    const porValor = () => {
+      const v = centsDe(form.valor.value);
+      if (v !== null) form.desconto.value = U.moneyInput(F.centsToString(saldo - v > 0n ? saldo - v : 0n));
+    };
+    form.desconto.addEventListener('input', porDesconto);
+    form.valor.addEventListener('input', porValor);
+    ['desconto', 'valor'].forEach((n) => form[n].addEventListener('blur', () => {
+      const v = U.parseMoney(form[n].value);
+      if (v !== null) form[n].value = U.moneyInput(v);
+    }));
+    m.el.querySelectorAll('[data-desc]').forEach((b) => b.addEventListener('click', () => {
+      form.desconto.value = U.moneyInput(F.centsToString(b.dataset.desc === 'juros' ? juros : 0n));
+      porDesconto();
+    }));
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       U.clearErrors(form);
       if (!form.data.value || form.data.value > U.today()) { U.fieldError(form, 'data', 'Informe uma data até hoje.'); return; }
-      const modo = form.modo.value;
-      const valor = modo === 'sem_juros' ? semJuros : saldo;
+      const desconto = centsDe(form.desconto.value);
+      if (desconto === null || desconto < 0n) { U.fieldError(form, 'desconto', 'Desconto inválido.'); return; }
+      if (desconto > maxDesconto) { U.fieldError(form, 'desconto', `Máximo de ${money(maxDesconto)} (juros + principal em aberto).`); return; }
+      const valor = saldo - desconto;
       const ok = await U.confirm({
         title: 'Confirmar quitação',
         html: true,
-        message: `<p>Registrar o recebimento de <strong>${money(valor)}</strong> (${modo === 'sem_juros' ? 'sem juros' : 'com juros'})
-          em ${parcelas.length} parcela(s) do contrato nº ${esc(c.numero)}, em ${date(form.data.value)}?</p>
-          ${modo === 'sem_juros' ? `<p class="small muted">Serão dispensados ${money(juros)} de juros. Se algum pagamento for estornado, os juros daquela parcela voltam a ser cobrados.</p>` : ''}`,
+        message: `<p>Registrar o recebimento de <strong>${money(valor)}</strong> em ${parcelas.length} parcela(s) do contrato
+          nº ${esc(c.numero)}, em ${date(form.data.value)}?</p>
+          ${desconto > 0n ? `<p>Desconto concedido: <strong>${money(desconto)}</strong>.</p>
+            <p class="small muted">Se algum desses pagamentos for estornado, o desconto daquela parcela é desfeito.</p>` : ''}`,
         confirmText: 'Quitar',
       });
       if (!ok) return;
@@ -2002,11 +2341,11 @@ window.APP_CONFIG = Object.freeze({
       U.busy(btn, true, 'Registrando...');
       try {
         const res = await U.rpc('quitar_contrato', {
-          p_contrato_id: c.id, p_modo: modo, p_data_pagamento: form.data.value, p_forma: form.forma.value,
-          p_observacoes: form.observacoes.value.trim() || null,
+          p_contrato_id: c.id, p_modo: 'com_juros', p_data_pagamento: form.data.value, p_forma: form.forma.value,
+          p_observacoes: form.observacoes.value.trim() || null, p_desconto: F.centsToString(desconto),
         });
         m.close();
-        U.toast(`Contrato quitado: ${money(res.total_pago)} recebidos${Number(res.juros_dispensados) ? `, ${money(res.juros_dispensados)} de juros dispensados` : ''}.`, 'success', 8000);
+        U.toast(`Contrato quitado: ${money(res.total_pago)} recebidos${Number(res.desconto) ? ` com ${money(res.desconto)} de desconto` : ''}.`, 'success', 8000);
         if (onDone) onDone(res);
         if ((res.pagamentos || []).length) openReceipt(res.pagamentos, { aposPagamento: true });
       } catch (err) {
@@ -2069,6 +2408,7 @@ window.APP_CONFIG = Object.freeze({
       const table = new DataTable({
         container: document.getElementById('tbl-pagamentos'),
         searchPlaceholder: 'Buscar por cliente ou nº do recibo',
+        sugerirNomes: true,
         filters: [
           { key: 'status', label: 'Status', type: 'select', value: 'confirmado', options: [
             { value: 'confirmado', label: 'Confirmados' }, { value: 'estornado', label: 'Estornados' }, { value: '', label: 'Todos' }] },
@@ -2235,11 +2575,15 @@ window.APP_CONFIG = Object.freeze({
 (function () {
   'use strict';
   const { esc, date } = U;
-  const COLS = 'id, nome, cpf_mascarado, telefone, email, endereco, data_cadastro, status, observacoes, consentimento_lgpd, consentimento_em, anonimizado_em, created_at';
+  const COLS = 'id, nome, cpf_mascarado, telefone, email, endereco, rg, data_nascimento, indicado_por, autocadastro_em, analisado, data_cadastro, status, observacoes, consentimento_lgpd, consentimento_em, anonimizado_em, created_at';
+  const TIPOS_DOC = { rg: 'RG', fachada: 'Frente da casa', holerite: 'Holerite', comprovante_residencia: 'Comprovante de residência', outro: 'Outro' };
   let table;
 
   function actions(r) {
     const b = [];
+    if (Auth.can('clientes.cpf') && !r.anonimizado_em) {
+      b.push(`<button class="btn btn-sm ${r.analisado === false ? 'btn-primary' : ''}" data-action="docs">${r.analisado === false ? 'Analisar' : 'Dados e documentos'}</button>`);
+    }
     if (Auth.can('clientes.write') && !r.anonimizado_em) b.push(`<button class="btn btn-sm" data-action="edit">Editar</button>`);
     b.push(`<button class="btn btn-sm" data-action="history">Contratos</button>`);
     if (Auth.can('contratos.write') && r.status === 'ativo') b.push(`<a class="btn btn-sm" href="#contratos?novo=${encodeURIComponent(r.id)}">Novo contrato</a>`);
@@ -2279,6 +2623,12 @@ window.APP_CONFIG = Object.freeze({
             <input type="text" id="c-end" name="endereco" maxlength="300" value="${esc(row ? row.endereco || '' : '')}"
               placeholder="Rua, número, bairro, cidade/UF, CEP">
             <span class="hint">Aparece no campo "Endereço" do emitente na nota promissória.</span></div>
+          <div class="field"><label for="c-rg">RG</label>
+            <input type="text" id="c-rg" name="rg" maxlength="20" value="${esc(row ? row.rg || '' : '')}"></div>
+          <div class="field"><label for="c-nasc">Data de nascimento</label>
+            <input type="date" id="c-nasc" name="data_nascimento" max="${U.today()}" value="${esc(row ? row.data_nascimento || '' : '')}"><span class="error-msg"></span></div>
+          <div class="field full"><label for="c-ind">Indicado por</label>
+            <input type="text" id="c-ind" name="indicado_por" maxlength="150" value="${esc(row ? row.indicado_por || '' : '')}" placeholder="Quem indicou o cliente"></div>
           <div class="field"><label for="c-data">Data de cadastro</label>
             <input type="date" id="c-data" name="data_cadastro" max="${U.today()}" value="${esc(row ? row.data_cadastro : U.today())}"><span class="error-msg"></span></div>
           <div class="field"><label for="c-status">Status</label>
@@ -2338,7 +2688,8 @@ window.APP_CONFIG = Object.freeze({
           p_id: edit ? row.id : null, p_nome: nome, p_cpf: pCpf, p_telefone: tel || null, p_email: email || null,
           p_data_cadastro: form.data_cadastro.value || null, p_status: form.status.value,
           p_observacoes: form.observacoes.value.trim() || null, p_consentimento: form.consentimento.checked,
-          p_endereco: form.endereco.value.trim() || null,
+          p_endereco: form.endereco.value.trim() || null, p_rg: form.rg.value.trim() || null,
+          p_data_nascimento: form.data_nascimento.value || null, p_indicado_por: form.indicado_por.value.trim() || null,
         });
         U.toast(edit ? 'Cliente atualizado com sucesso.' : 'Cliente cadastrado com sucesso.', 'success');
         m.close();
@@ -2411,10 +2762,118 @@ window.APP_CONFIG = Object.freeze({
     });
     if (!ok) return;
     try {
+      // Remove primeiro os arquivos do Storage (fotos e documentos), depois os dados.
+      const dc = await U.rpc('documentos_cliente', { p_cliente_id: row.id });
+      const paths = (dc.documentos || []).map((d) => d.path);
+      if (paths.length) {
+        const { error } = await Auth.client.storage.from('documentos').remove(paths);
+        if (error) throw new Error('Não foi possível apagar os documentos do cliente: ' + error.message);
+      }
       await U.rpc('anonimizar_cliente', { p_cliente_id: row.id, p_motivo: ok.reason });
       U.toast('Cliente anonimizado. Registro mantido na auditoria.', 'success');
       table.reload();
     } catch (err) { U.toast(U.errorMessage(err), 'error'); }
+  }
+
+  /** Gera um link de cadastro (uso único) e oferece o envio pelo WhatsApp. */
+  function openLinkCadastro() {
+    const m = U.modal({
+      title: 'Link de cadastro para o cliente',
+      body: `<p>O cliente abre o link sem login, preenche nome, RG, CPF, nascimento, endereço e envia foto do RG, da frente da casa,
+          do último holerite e do comprovante de residência. Ao concluir, ele aparece na lista como <strong>Novo cadastro</strong>.</p>
+        <form id="form-convite" novalidate><div class="form-grid">
+          <div class="field"><label for="cv-nome">Nome do cliente (opcional)</label>
+            <input type="text" id="cv-nome" name="nome" maxlength="150"></div>
+          <div class="field"><label for="cv-tel">WhatsApp do cliente (opcional)</label>
+            <input type="text" id="cv-tel" name="telefone" inputmode="tel" maxlength="16" placeholder="(00) 00000-0000"><span class="error-msg"></span></div>
+        </div></form>
+        <p class="small muted mt-1">O link vale por 7 dias e só pode ser usado uma vez. Gere um link para cada cliente.</p>`,
+      footer: `<button type="button" class="btn" data-close>Cancelar</button><button type="submit" form="form-convite" class="btn btn-primary">Gerar link</button>`,
+    });
+    const form = m.el.querySelector('form');
+    form.telefone.addEventListener('blur', () => { if (U.digits(form.telefone.value)) form.telefone.value = U.formatPhone(form.telefone.value); });
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      U.clearErrors(form);
+      const tel = U.digits(form.telefone.value);
+      if (tel && (tel.length < 10 || tel.length > 11)) { U.fieldError(form, 'telefone', 'Informe DDD + número.'); return; }
+      const btn = m.el.querySelector('button[type=submit]');
+      U.busy(btn, true, 'Gerando...');
+      try {
+        const cv = await U.rpc('gerar_convite_cadastro', { p_nome: form.nome.value.trim() || null, p_telefone: tel || null });
+        const link = `${location.origin}${location.pathname}#cadastro?t=${cv.token}`;
+        const nome = form.nome.value.trim().split(' ')[0];
+        m.close();
+        U.modalWhatsApp({
+          titulo: 'Enviar link de cadastro',
+          intro: 'Copie o link ou envie direto pelo WhatsApp.',
+          link,
+          telefone: tel || null,
+          validade: `Válido até ${U.datetime(cv.expira_em)} · uso único.`,
+          mensagem: `Olá${nome ? `, ${nome}` : ''}! Para fazer seu cadastro na ${Auth.org.nome}, acesse o link abaixo e preencha seus dados.\n\n` +
+            `Tenha em mãos: foto do RG (frente e verso), foto da frente da sua casa, seu último holerite e um comprovante de residência.\n\n` +
+            `${link}\n\nO link é válido até ${U.datetime(cv.expira_em)} e só pode ser usado uma vez.`,
+        });
+      } catch (err) {
+        U.busy(btn, false);
+        U.toast(U.errorMessage(err), 'error');
+      }
+    });
+  }
+
+  /** Dados completos e documentos enviados pelo cliente (acesso auditado). */
+  async function openDocumentos(row) {
+    const m = U.modal({ title: `Dados e documentos — ${row.nome}`, size: 'xl', body: U.loadingHTML(),
+      footer: `<button type="button" class="btn" data-close>Fechar</button>
+        ${row.analisado === false && Auth.can('clientes.write') ? '<button type="button" class="btn btn-success" data-analisado>Marcar como analisado</button>' : ''}` });
+    try {
+      const dc = await U.rpc('documentos_cliente', { p_cliente_id: row.id });
+      const docs = dc.documentos || [];
+      let urls = {};
+      if (docs.length) {
+        const { data, error } = await Auth.client.storage.from('documentos').createSignedUrls(docs.map((d) => d.path), 600);
+        if (error) throw error;
+        urls = Object.fromEntries((data || []).map((u) => [u.path, u.signedUrl]));
+      }
+      const idade = row.data_nascimento
+        ? Math.floor(window.Finance.diffDays(row.data_nascimento, U.today()) / 365.25) : null;
+      m.body.innerHTML = `
+        ${row.analisado === false ? '<div class="alert alert-warning"><strong>Novo cadastro feito pelo próprio cliente.</strong> Confira os dados e os documentos antes de liberar o empréstimo.</div>' : ''}
+        <dl class="dl mb-2">
+          <dt>Nome</dt><dd>${esc(row.nome)}</dd>
+          <dt>CPF</dt><dd>${esc(U.formatCPF(dc.cpf || '') || '—')}</dd>
+          <dt>RG</dt><dd>${esc(row.rg || '—')}</dd>
+          <dt>Nascimento</dt><dd>${row.data_nascimento ? `${date(row.data_nascimento)} (${idade} anos)` : '—'}</dd>
+          <dt>Telefone</dt><dd>${esc(U.formatPhone(row.telefone))}</dd>
+          <dt>E-mail</dt><dd>${esc(row.email || '—')}</dd>
+          <dt>Endereço</dt><dd>${esc(row.endereco || '—')}</dd>
+          <dt>Indicado por</dt><dd>${esc(row.indicado_por || '—')}</dd>
+          ${row.autocadastro_em ? `<dt>Autocadastro</dt><dd>${esc(U.datetime(row.autocadastro_em))}</dd>` : ''}
+        </dl>
+        <div class="section-title">Documentos (${docs.length})</div>
+        ${docs.length ? `<div class="doc-grid">${docs.map((d) => {
+          const url = urls[d.path];
+          const imagem = /^image\//.test(d.mime || '') || /\.jpg$/.test(d.path);
+          return `<div class="doc-card"><div class="doc-thumb">${url
+            ? (imagem ? `<a href="${esc(url)}" target="_blank" rel="noopener"><img src="${esc(url)}" alt="${esc(TIPOS_DOC[d.tipo] || d.tipo)}"></a>`
+                      : `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener">${U.icon('file')} Abrir PDF</a>`)
+            : '<span class="muted small">Arquivo indisponível</span>'}</div>
+            <div class="doc-info"><strong>${esc(TIPOS_DOC[d.tipo] || d.tipo)}</strong>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener">Abrir</a>` : ''}</div></div>`;
+        }).join('')}</div><p class="small muted mt-1">Os links das imagens expiram em 10 minutos. Cada acesso fica registrado na auditoria.</p>`
+          : U.emptyHTML('Nenhum documento', 'Este cliente foi cadastrado pela equipe, sem envio de documentos.')}`;
+      const btn = m.el.querySelector('[data-analisado]');
+      if (btn) btn.addEventListener('click', async () => {
+        U.busy(btn, true, 'Salvando...');
+        try {
+          await U.rpc('marcar_cliente_analisado', { p_cliente_id: row.id });
+          U.toast('Cadastro marcado como analisado.', 'success');
+          m.close();
+          table.reload();
+        } catch (err) { U.busy(btn, false); U.toast(U.errorMessage(err), 'error'); }
+      });
+    } catch (err) {
+      m.body.innerHTML = U.errorHTML(U.errorMessage(err), false);
+    }
   }
 
   App.page('clientes', 'Clientes', async () => {
@@ -2422,17 +2881,28 @@ window.APP_CONFIG = Object.freeze({
     btnNovo.innerHTML = `${U.icon('plus')} Novo cliente`;
     if (!Auth.can('clientes.write')) btnNovo.classList.add('hidden');
     btnNovo.addEventListener('click', () => openForm(null));
+    if (Auth.can('clientes.write')) {
+      const btnLink = document.createElement('button');
+      btnLink.type = 'button';
+      btnLink.className = 'btn btn-whatsapp';
+      btnLink.textContent = 'Link de cadastro';
+      btnLink.addEventListener('click', openLinkCadastro);
+      btnNovo.before(btnLink);
+    }
 
     table = new DataTable({
       container: document.getElementById('tbl-clientes'),
       searchPlaceholder: 'Buscar por nome, e-mail ou telefone',
+      sugerirNomes: true,
       filters: [{ key: 'status', label: 'Status', type: 'select', value: 'ativo', options: [
-        { value: 'ativo', label: 'Ativos' }, { value: 'inativo', label: 'Inativos' },
+        { value: 'ativo', label: 'Ativos' }, { value: 'novos', label: 'Novos cadastros (analisar)' }, { value: 'inativo', label: 'Inativos' },
         { value: 'arquivado', label: 'Arquivados' }, { value: '', label: 'Todos' }] }],
       emptyTitle: 'Nenhum cliente encontrado',
       emptyText: 'Ajuste os filtros ou cadastre um novo cliente.',
+      rowClass: (r) => (r.analisado === false ? 'row-highlight-warning' : ''),
       columns: [
-        { label: 'Nome', render: (r) => `<strong>${esc(r.nome)}</strong>${r.anonimizado_em ? ' ' + U.badge('Anonimizado') : ''}` },
+        { label: 'Nome', render: (r) => `<strong>${esc(r.nome)}</strong>${r.anonimizado_em ? ' ' + U.badge('Anonimizado') : ''}${
+            r.analisado === false ? ' ' + U.badge('Novo cadastro — analisar', 'warning') : ''}${r.indicado_por ? `<div class="small muted">Indicação: ${esc(r.indicado_por)}</div>` : ''}` },
         { label: 'CPF', render: (r) => (r.cpf_mascarado ? `<span class="mono">${esc(r.cpf_mascarado)}</span>` : '—') },
         { label: 'Telefone', render: (r) => esc(U.formatPhone(r.telefone)) },
         { label: 'E-mail', render: (r) => esc(r.email || '—') },
@@ -2442,7 +2912,8 @@ window.APP_CONFIG = Object.freeze({
       ],
       fetch: async ({ from, to, search, filters }) => {
         let q = Auth.client.from('clientes').select(COLS, { count: 'exact' }).order('nome').range(from, to);
-        if (filters.status) q = q.eq('status', filters.status);
+        if (filters.status === 'novos') q = q.eq('analisado', false);
+        else if (filters.status) q = q.eq('status', filters.status);
         if (search) {
           const d = U.digits(search);
           q = q.or(`nome.ilike.%${search}%,email.ilike.%${search}%` + (d.length >= 4 ? `,telefone.ilike.%${d}%` : ''));
@@ -2457,6 +2928,7 @@ window.APP_CONFIG = Object.freeze({
         else if (action === 'archive') changeStatus(row, 'arquivado');
         else if (action === 'unarchive') changeStatus(row, 'ativo');
         else if (action === 'anonymize') anonymize(row);
+        else if (action === 'docs') openDocumentos(row);
       },
     });
     await table.load();
@@ -2511,9 +2983,14 @@ window.APP_CONFIG = Object.freeze({
           <span class="error-msg"></span></div>
         <div class="field"><label for="t-enc-desc">Descrição dos encargos</label>
           <input type="text" id="t-enc-desc" name="encargos_desc" maxlength="500"><span class="error-msg"></span></div>
+        <input type="hidden" name="parcela_fixa" value="">
         ${extra}
       </div>`;
   }
+
+  // Campos que, se alterados pelo usuário, desfazem a parcela editada na simulação.
+  const CAMPOS_CALCULO = ['principal', 'data', 'frequencia', 'parcelas', 'primeiro', 'sistema', 'taxa', 'encargos'];
+  const pctTexto = (s) => String(s).replace(/\.?0+$/, '').replace('.', ',');
 
   /** Lê e valida os termos. Retorna params para Finance.schedule + RPC, ou null. */
   function readTerms(form) {
@@ -2544,9 +3021,11 @@ window.APP_CONFIG = Object.freeze({
     }
     if (encargos === null) { U.fieldError(form, 'encargos', 'Valor inválido.'); ok = false; }
     if (!ok) { U.focusFirstError(form); return null; }
+    const fixa = form.sistema.value === 'PRICE' && form.parcela_fixa.value ? form.parcela_fixa.value : undefined;
     return {
       principal, taxaMensalPct: taxa, parcelas: n, frequencia: form.frequencia.value, sistema: form.sistema.value,
       encargos, primeiroVencimento: primeiro, dataContratacao: data, encargosDesc: form.encargos_desc.value.trim(),
+      parcelaFixa: fixa,
     };
   }
 
@@ -2562,23 +3041,39 @@ window.APP_CONFIG = Object.freeze({
       const v = U.parseMoney(form[n].value);
       if (v !== null && !form[n].readOnly) form[n].value = U.moneyInput(v);
     }));
-    form.addEventListener('input', onChange);
-    form.addEventListener('change', onChange);
+    const aoAlterar = (e) => {
+      if (e.target && CAMPOS_CALCULO.includes(e.target.name)) form.parcela_fixa.value = '';
+      onChange(e);
+    };
+    form.addEventListener('input', aoAlterar);
+    form.addEventListener('change', aoAlterar);
   }
 
   function simulationHTML(s, p) {
     const first = s.rows[0].total;
     const last = s.rows[s.rows.length - 1].total;
-    const parcelaTxt = p.sistema === 'SAC' ? `${money(first)} → ${money(last)}`
-      : money(first) + (first !== last ? `<div class="small muted">última ${money(last)}</div>` : '');
     const cetA = F.annualFromMonthly(s.cetMensal);
+    const editavel = p.sistema === 'PRICE';
+    const parcelaItem = editavel
+      ? `<div class="summary-item sim-edit"><div class="label">Parcela <span class="muted">(editável)</span></div>
+          <input type="text" class="sim-input" id="sim-parcela" inputmode="decimal" value="${U.moneyInput(F.centsToString(first))}" aria-label="Valor da parcela">
+          <div class="small muted">${first !== last ? `última ${money(last)}` : '&nbsp;'}</div>
+          <button type="button" class="btn btn-sm mt-1" id="sim-arredondar">Arredondar para cima</button></div>`
+      : `<div class="summary-item"><div class="label">Parcela</div><div class="value">${money(first)} → ${money(last)}</div>
+          <div class="small muted">No SAC as parcelas diminuem; use Price para editar o valor.</div></div>`;
+    const totalItem = editavel
+      ? `<div class="summary-item sim-edit"><div class="label">Total a pagar <span class="muted">(editável)</span></div>
+          <input type="text" class="sim-input" id="sim-total" inputmode="decimal" value="${U.moneyInput(F.centsToString(s.total))}" aria-label="Total a pagar"></div>`
+      : `<div class="summary-item"><div class="label">Total a pagar</div><div class="value">${money(s.total)}</div></div>`;
     return `
+      ${p.parcelaFixa ? `<div class="alert alert-info">Parcela ajustada manualmente: a taxa foi recalculada para
+        <strong>${esc(pctTexto(p.taxaMensalPct))}% a.m.</strong> A última parcela ajusta os centavos.</div>` : ''}
       <div class="summary-grid">
         <div class="summary-item"><div class="label">Principal</div><div class="value">${money(F.toCents(p.principal))}</div></div>
         <div class="summary-item"><div class="label">Juros</div><div class="value">${money(s.totalJuros)}</div></div>
         <div class="summary-item"><div class="label">Encargos</div><div class="value">${money(s.totalEncargos)}</div></div>
-        <div class="summary-item"><div class="label">Total a pagar</div><div class="value">${money(s.total)}</div></div>
-        <div class="summary-item"><div class="label">Parcela</div><div class="value">${parcelaTxt}</div></div>
+        ${totalItem}
+        ${parcelaItem}
         <div class="summary-item"><div class="label">Taxa do período</div><div class="value">${U.pct(Number(s.taxaPeriodo) / 1e8, 4)}</div></div>
         <div class="summary-item"><div class="label">CET</div><div class="value">${s.cetMensal === null ? '—' : `${U.pct(s.cetMensal)} a.m.`}</div>
           <div class="small muted">${cetA === null ? '' : `${U.pct(cetA)} a.a.`}</div></div>
@@ -2610,7 +3105,21 @@ window.APP_CONFIG = Object.freeze({
       out.insertAdjacentHTML('afterbegin', '<div class="alert alert-warning sim-stale">Os dados mudaram. Simule novamente antes de confirmar.</div>');
     };
     bindTermsAuto(form, () => { if (current && !out.querySelector('.sim-stale')) stale(); });
-    btnSim.addEventListener('click', () => {
+    /** Ajusta a taxa para a parcela desejada (Price) e simula de novo. */
+    const aplicarParcela = (valor) => {
+      if (!current) return;
+      const v = U.parseMoney(valor);
+      if (!v || F.toCents(v) <= 0n) { U.toast('Valor da parcela inválido.', 'error'); return; }
+      try {
+        const tx = F.taxaParaParcela(current.p, v);
+        form.taxa.value = pctTexto(tx.taxaMensalPct);
+        form.parcela_fixa.value = tx.parcelaFixa;
+        simular(false);
+      } catch (err) {
+        U.toast(err.message, 'error', 8000);
+      }
+    };
+    const simular = (rolar = true) => {
       const p = readTerms(form);
       if (!p) return;
       try {
@@ -2618,11 +3127,34 @@ window.APP_CONFIG = Object.freeze({
         current = { p, s };
         out.innerHTML = simulationHTML(s, p);
         btnOk.disabled = false;
-        out.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        if (rolar) out.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        const inParcela = out.querySelector('#sim-parcela');
+        const inTotal = out.querySelector('#sim-total');
+        if (inParcela) {
+          const enter = (el, fn) => el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); fn(); } });
+          const porParcela = () => aplicarParcela(inParcela.value);
+          const porTotal = () => {
+            const t = U.parseMoney(inTotal.value);
+            if (!t) { U.toast('Total inválido.', 'error'); return; }
+            aplicarParcela(F.centsToString(F.divRound(F.toCents(t), BigInt(p.parcelas))));
+          };
+          inParcela.addEventListener('change', porParcela);
+          inTotal.addEventListener('change', porTotal);
+          enter(inParcela, porParcela);
+          enter(inTotal, porTotal);
+          out.querySelector('#sim-arredondar').addEventListener('click', () => {
+            const atual = Number(F.centsToString(s.rows[0].total));
+            if (Number.isInteger(atual)) { U.toast('A parcela já está em reais inteiros. Digite outro valor se quiser.', 'info'); return; }
+            aplicarParcela(String(Math.ceil(atual)));
+          });
+        }
       } catch (err) {
+        current = null;
+        btnOk.disabled = true;
         out.innerHTML = `<div class="alert alert-danger">${esc(err.message)}</div>`;
       }
-    });
+    };
+    btnSim.addEventListener('click', () => simular(true));
     btnOk.addEventListener('click', async () => {
       if (!current) return;
       await onConfirm(current, btnOk);
@@ -2640,6 +3172,7 @@ window.APP_CONFIG = Object.freeze({
       p_encargos: F.centsToString(F.toCents(p.encargos)),
       p_descricao_encargos: p.encargosDesc || null,
       p_total_esperado: F.centsToString(s.total),
+      p_valor_parcela: p.parcelaFixa ? F.centsToString(F.toCents(p.parcelaFixa)) : null,
     };
   }
 
@@ -2653,7 +3186,7 @@ window.APP_CONFIG = Object.freeze({
       body: `${complianceAlert()}<form id="form-contrato" novalidate>
           <div class="form-grid mb-2">
             <div class="field full"><label for="t-cliente">Cliente <span class="req">*</span></label>
-              <div class="input-group"><input type="search" id="t-cliente-busca" placeholder="Filtrar clientes..." aria-label="Filtrar clientes" style="max-width:220px">
+              <div class="input-group"><input type="search" id="t-cliente-busca" placeholder="Digite o nome..." aria-label="Filtrar clientes" style="max-width:220px" list="dl-nomes-ct" autocomplete="off"><datalist id="dl-nomes-ct"></datalist>
               <select id="t-cliente" name="cliente"><option value="">Carregando clientes...</option></select></div>
               <span class="error-msg"></span></div>
           </div>
@@ -2680,7 +3213,13 @@ window.APP_CONFIG = Object.freeze({
         list.map((c) => `<option value="${esc(c.id)}"${c.id === preselectClientId ? ' selected' : ''}>${esc(c.nome)}${c.cpf_mascarado ? ' — ' + esc(c.cpf_mascarado) : ' (sem CPF)'}</option>`).join('');
     };
     renderOptions();
-    m.el.querySelector('#t-cliente-busca').addEventListener('input', (e) => renderOptions(e.target.value));
+    m.el.querySelector('#t-cliente-busca').addEventListener('input', (e) => {
+      renderOptions(e.target.value);
+      // Nome escolhido na lista: já seleciona o cliente.
+      const exato = clientes.filter((c) => c.nome.toLowerCase() === e.target.value.trim().toLowerCase());
+      if (exato.length === 1) sel.value = exato[0].id;
+    });
+    U.preencherNomes(m.el.querySelector('#dl-nomes-ct'));
 
     simulationController(m, form, async (sim, btn) => {
       U.clearErrors(form);
@@ -3037,6 +3576,7 @@ window.APP_CONFIG = Object.freeze({
     table = new DataTable({
       container: document.getElementById('tbl-contratos'),
       searchPlaceholder: 'Buscar por cliente ou nº do contrato',
+      sugerirNomes: true,
       filters: [{ key: 'status', label: 'Status', type: 'select', value: 'abertos', options: [
         { value: 'abertos', label: 'Ativos e aguardando assinatura' }, { value: 'pendente_assinatura', label: 'Aguardando assinatura' },
         { value: 'ativo', label: 'Ativos' }, { value: 'quitado', label: 'Quitados' }, { value: 'renegociado', label: 'Renegociados' },
@@ -3152,6 +3692,7 @@ window.APP_CONFIG = Object.freeze({
     table = new DataTable({
       container: document.getElementById('tbl-parcelas'),
       searchPlaceholder: 'Buscar por cliente ou nº do contrato',
+      sugerirNomes: true,
       filters: [
         { key: 'situacao', label: 'Situação', type: 'select', value: situacaoInicial, options: [
           { value: 'abertas', label: 'Em aberto' }, { value: 'vencida', label: 'Vencidas' },
@@ -4133,6 +4674,29 @@ window.APP_CONFIG = Object.freeze({
     eq(F.valorPorExtenso('1000000.00'), 'um milhão de reais');
     eq(F.valorPorExtenso('2500000.00'), 'dois milhões e quinhentos mil reais');
     eq(F.valorPorExtenso('1234567.89'), 'um milhão, duzentos e trinta e quatro mil quinhentos e sessenta e sete reais e oitenta e nove centavos');
+  });
+  test('parcela fixa: arredondar 88,85 para 89,00 recalcula a taxa', () => {
+    const base = { principal: '1000.00', parcelas: 12, frequencia: 'mensal', sistema: 'PRICE', primeiroVencimento: '2026-02-10' };
+    const t = F.taxaParaParcela(base, '89.00');
+    const s = F.schedule(Object.assign({}, base, { taxaMensalPct: t.taxaMensalPct, parcelaFixa: t.parcelaFixa }));
+    for (let k = 0; k < 11; k++) eq(s.rows[k].total, c('89.00'), 'parcela ' + (k + 1));
+    ok(s.rows[11].total > c('88.50') && s.rows[11].total < c('89.50'), 'última parcela ajusta centavos: ' + s.rows[11].total);
+    eq(s.totalPrincipal, c('1000.00'));
+    ok(Number(t.taxaMensalPct) > 1 && Number(t.taxaMensalPct) < 1.1, 'taxa maior que 1%: ' + t.taxaMensalPct);
+  });
+  test('parcela fixa com encargos e frequência semanal', () => {
+    const base = { principal: '500.00', parcelas: 8, frequencia: 'semanal', sistema: 'PRICE', encargos: '8.00', primeiroVencimento: '2026-02-10' };
+    const t = F.taxaParaParcela(base, '70.00');
+    const s = F.schedule(Object.assign({}, base, { taxaMensalPct: t.taxaMensalPct, parcelaFixa: t.parcelaFixa }));
+    for (let k = 0; k < 7; k++) eq(s.rows[k].total, c('70.00'), 'parcela ' + (k + 1));
+    eq(s.totalEncargos, c('8.00'));
+  });
+  test('parcela fixa: validações', () => {
+    const base = { principal: '1000.00', taxaMensalPct: '1', parcelas: 12, frequencia: 'mensal', sistema: 'PRICE', primeiroVencimento: '2026-02-10' };
+    throws(() => F.schedule(Object.assign({}, base, { parcelaFixa: '10.00' })), 'não cobre os juros');
+    throws(() => F.schedule(Object.assign({}, base, { parcelaFixa: '600.00' })), 'alta demais');
+    throws(() => F.schedule(Object.assign({}, base, { sistema: 'SAC', parcelaFixa: '90.00' })), 'SAC');
+    throws(() => F.taxaParaParcela(base, '50.00'), 'abaixo do mínimo sem juros');
   });
   test('datas por extenso', () => {
     const d = F.dataPorExtenso('2026-11-01');
