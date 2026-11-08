@@ -83,6 +83,7 @@ window.APP_CONFIG = Object.freeze({
     'clientes.write': ['admin', 'gestor', 'operador'],
     'clientes.cpf': ['admin', 'gestor', 'operador'],
     'clientes.anonimizar': ['admin'],
+    'clientes.excluir': ['admin'],
     'contratos.write': ['admin', 'gestor'],
     'contratos.cancelar': ['admin'],
     'pagamentos.write': ['admin', 'gestor', 'operador'],
@@ -586,9 +587,10 @@ window.APP_CONFIG = Object.freeze({
     confirm({ title = 'Confirmar', message = '', confirmText = 'Confirmar', danger = false, reason = null, html = false } = {}) {
       return new Promise((resolve) => {
         let result = null;
-        const reasonField = reason ? `<div class="field mt-2"><label for="cf-reason">${U.esc(reason.label || 'Justificativa')} <span class="req">*</span></label>
+        const minReason = reason ? (reason.minLength ?? 10) : 0;
+        const reasonField = reason ? `<div class="field mt-2"><label for="cf-reason">${U.esc(reason.label || 'Justificativa')} ${minReason ? '<span class="req">*</span>' : ''}</label>
           <textarea id="cf-reason" maxlength="1000" placeholder="${U.esc(reason.placeholder || '')}"></textarea>
-          <span class="hint">Mínimo de ${reason.minLength || 10} caracteres.</span><span class="error-msg"></span></div>` : '';
+          ${minReason ? `<span class="hint">Mínimo de ${minReason} caracteres.</span>` : ''}<span class="error-msg"></span></div>` : '';
         const m = U.modal({
           title,
           body: `<div class="cf-message">${html ? message : `<p>${U.esc(message)}</p>`}</div>${reasonField}`,
@@ -600,10 +602,10 @@ window.APP_CONFIG = Object.freeze({
           if (reason) {
             const ta = m.el.querySelector('#cf-reason');
             const v = ta.value.trim();
-            if (v.length < (reason.minLength || 10)) {
+            if (v.length < minReason) {
               const f = ta.closest('.field');
               f.classList.add('invalid');
-              f.querySelector('.error-msg').textContent = `Informe ao menos ${reason.minLength || 10} caracteres.`;
+              f.querySelector('.error-msg').textContent = `Informe ao menos ${minReason} caracteres.`;
               ta.focus();
               return;
             }
@@ -792,7 +794,7 @@ window.APP_CONFIG = Object.freeze({
         return `Olá, ${nome}! Confirmamos o recebimento dos juros.\n\n` +
           `• Contrato nº ${g.contrato_numero} — parcela ${g.parcela_numero}/${g.qtd_parcelas}\n` +
           `• Valor pago: ${U.money(g.valor)}\n• Data: ${U.date(g.data_pagamento)}\n` +
-          `• O restante desta parcela (${U.money(g.valor_transferido)}) foi somado à parcela ${g.parcela_destino_numero}` +
+          `• O valor desta parcela (${U.money(g.valor_transferido)}) foi somado à parcela ${g.parcela_destino_numero}` +
           `${g.parcela_destino_vencimento ? `, com vencimento em ${U.date(g.parcela_destino_vencimento)}` : ''}.\n\n` +
           `Seu comprovante:\n${link}\n\nObrigado!`;
       }
@@ -1995,7 +1997,7 @@ window.APP_CONFIG = Object.freeze({
             <label class="quit-opcao"><input type="radio" name="modo" value="parcela" checked>
               <div><strong>Pagar a parcela</strong><div class="small muted">Valor total ou parcial da parcela.</div></div></label>
             <label class="quit-opcao"><input type="radio" name="modo" value="juros">
-              <div><strong>Pagar só os juros</strong><div class="small muted">Cliente paga os juros agora; o restante desta parcela é somado à próxima (as datas não mudam).</div></div></label>
+              <div><strong>Pagar só os juros</strong><div class="small muted">Cliente paga só os juros do atraso; esta parcela vai inteira para a próxima (as datas não mudam).</div></div></label>
           </div>
           <div class="form-grid">
             <div class="field"><label for="pg-valor" id="pg-valor-label">Valor recebido (R$) <span class="req">*</span></label>
@@ -2022,9 +2024,9 @@ window.APP_CONFIG = Object.freeze({
       const v = U.parseMoney(form.valor.value);
       const excedente = !soJuros() && v && F.toCents(v) > F.toCents(saldo) ? F.toCents(v) - F.toCents(saldo) : 0n;
       aloc.innerHTML = soJuros()
-        ? (v && F.toCents(v) < F.toCents(saldo)
-          ? `Os juros entram no caixa. A parcela é encerrada e <strong>${money(F.toCents(saldo) - F.toCents(v))}</strong> são somados à próxima parcela.`
-          : 'O valor precisa ser menor que o saldo da parcela.')
+        ? (v && F.toCents(v) > 0n
+          ? `Os juros entram no caixa e não abatem a parcela: os <strong>${money(saldo)}</strong> desta parcela são somados à próxima.`
+          : 'Informe o valor dos juros.')
         : excedente > 0n
           ? `<span class="text-success">Quita esta parcela (${money(saldo)}) e abate <strong>${money(excedente)}</strong> da(s) próxima(s) parcela(s).</span>`
           : allocationPreview(p, v);
@@ -2056,16 +2058,12 @@ window.APP_CONFIG = Object.freeze({
 
       const btn = m.el.querySelector('button[type=submit]');
       if (soJuros()) {
-        if (F.toCents(valor) >= F.toCents(saldo)) {
-          U.fieldError(form, 'valor', 'Esse valor quita a parcela inteira; use "Pagar a parcela".');
-          return;
-        }
-        const restante = F.toCents(saldo) - F.toCents(valor);
+        const restante = F.toCents(saldo);
         const conf = await U.confirm({
           title: 'Pagar só os juros',
           html: true,
-          message: `<p>Registrar <strong>${money(valor)}</strong> da parcela ${p.numero}/${p.qtd_parcelas} do contrato nº ${esc(p.contrato_numero)}?</p>
-            <p>A parcela ${p.numero} será encerrada e o restante, <strong>${money(restante)}</strong>, será somado à próxima parcela.
+          message: `<p>Registrar <strong>${money(valor)}</strong> de juros da parcela ${p.numero}/${p.qtd_parcelas} do contrato nº ${esc(p.contrato_numero)}?</p>
+            <p>Os juros não abatem a parcela: ela será encerrada e o valor dela, <strong>${money(restante)}</strong>, será somado à próxima parcela.
             As datas de vencimento não mudam.</p>`,
           confirmText: 'Receber e acumular',
         });
@@ -2233,7 +2231,7 @@ window.APP_CONFIG = Object.freeze({
       <dt>Valor pago</dt><dd><strong>${money(g.valor)}</strong> em ${date(g.data_pagamento)} · ${esc(U.LABELS.forma[g.forma])}</dd>
       ${parcela && Math.abs(Number(parcela.valor) - Number(g.valor)) > 0.004 ? `<dt>Valor da parcela</dt><dd>${money(parcela.valor)} (valor contratado)</dd>` : ''}
       <dt>Composição</dt><dd>Principal ${money(g.valor_principal)} · Juros ${money(g.valor_juros)} · Encargos ${money(g.valor_encargos)}</dd>
-      ${g.tipo === 'acumulo' ? `<dt>Tipo</dt><dd><strong>Pagamento só dos juros</strong> — restante de ${money(g.valor_transferido)}
+      ${g.tipo === 'acumulo' ? `<dt>Tipo</dt><dd><strong>Pagamento só dos juros</strong> — valor de ${money(g.valor_transferido)}
         somado à parcela ${esc(g.parcela_destino_numero)}.</dd>` : ''}
       ${g.tipo === 'prorrogacao' ? `<dt>Tipo</dt><dd><strong>Pagamento só dos juros</strong> (o saldo da parcela não mudou).</dd>
         <dt>Vencimento</dt><dd>${g.vencimento_anterior ? `${date(g.vencimento_anterior)} → ` : ''}<strong>${date(g.vencimento_novo || (parcela && parcela.vencimento))}</strong>
@@ -2261,7 +2259,7 @@ window.APP_CONFIG = Object.freeze({
       : Number(g.valor) >= devido - 0.005 ? ['PAGO', 'pago'] : ['PAGO PARCIAL', 'parcial'];
     const aviso = !ativo ? ''
       : acumulou ? `<div class="alert alert-info"><strong>Pagamento só dos juros.</strong> A parcela ${g.parcela_numero}/${g.qtd_parcelas}
-          foi encerrada e o restante, <strong>${money(g.valor_transferido)}</strong>, foi somado à
+          foi encerrada e o valor dela, <strong>${money(g.valor_transferido)}</strong>, foi somado à
           <strong>parcela ${esc(g.parcela_destino_numero)}</strong>. As datas de vencimento não mudaram.</div>`
       : prorrogou ? `<div class="alert alert-info"><strong>Pagamento só dos juros.</strong>
           Parcela ${g.parcela_numero}/${g.qtd_parcelas}${g.vencimento_anterior
@@ -2707,6 +2705,9 @@ window.APP_CONFIG = Object.freeze({
     if (Auth.can('clientes.anonimizar') && r.status === 'arquivado' && !r.anonimizado_em) {
       b.push(`<button class="btn btn-sm btn-danger" data-action="anonymize">Anonimizar</button>`);
     }
+    if (Auth.can('clientes.excluir') && !r.anonimizado_em) {
+      b.push(`<button class="btn btn-sm btn-danger" data-action="delete">Excluir</button>`);
+    }
     return `<div class="btn-group">${b.join('')}</div>`;
   }
 
@@ -2885,6 +2886,46 @@ window.APP_CONFIG = Object.freeze({
       U.toast('Cliente anonimizado. Registro mantido na auditoria.', 'success');
       table.reload();
     } catch (err) { U.toast(U.errorMessage(err), 'error'); }
+  }
+
+  async function excluir(row) {
+    // Clientes com contrato não podem ser excluídos (registros financeiros são mantidos).
+    const { count, error: errCount } = await Auth.client.from('contratos')
+      .select('id', { count: 'exact', head: true }).eq('cliente_id', row.id);
+    if (errCount) { U.toast(U.errorMessage(errCount), 'error'); return; }
+    if (count > 0) {
+      U.modal({
+        title: 'Não é possível excluir',
+        body: `<p><strong>${esc(row.nome)}</strong> tem ${count} contrato(s). Contratos, parcelas e pagamentos são registros
+          financeiros e não podem ser apagados.</p>
+          <p>Para tirar o cliente da lista, use <strong>Arquivar</strong>. Se ele pediu a eliminação dos dados pessoais (LGPD),
+          arquive e depois use <strong>Anonimizar</strong>.</p>`,
+        footer: '<button type="button" class="btn btn-primary" data-close>Entendi</button>',
+      });
+      return;
+    }
+    const ok = await U.confirm({
+      title: 'Excluir cliente',
+      html: true,
+      message: `<div class="alert alert-danger">Excluir <strong>${esc(row.nome)}</strong> definitivamente? O cadastro, as fotos e os
+        documentos serão apagados. <strong>Não dá para desfazer.</strong></div>
+        <p class="small muted">A exclusão fica registrada na auditoria.</p>`,
+      confirmText: 'Excluir definitivamente',
+      danger: true,
+      reason: { label: 'Motivo (opcional)', minLength: 0, placeholder: 'Ex.: cadastro duplicado' },
+    });
+    if (!ok) return;
+    try {
+      const dc = await U.rpc('documentos_cliente', { p_cliente_id: row.id });
+      const paths = (dc.documentos || []).map((d) => d.path);
+      if (paths.length) {
+        const { error } = await Auth.client.storage.from('documentos').remove(paths);
+        if (error) throw new Error('Não foi possível apagar os documentos do cliente: ' + error.message);
+      }
+      await U.rpc('excluir_cliente', { p_cliente_id: row.id, p_motivo: (ok.reason || '').trim() || null });
+      U.toast(`Cliente "${row.nome}" excluído.`, 'success');
+      table.reload();
+    } catch (err) { U.toast(U.errorMessage(err), 'error', 9000); }
   }
 
   /** Gera um link de cadastro (uso único) e oferece o envio pelo WhatsApp. */
@@ -3105,6 +3146,7 @@ window.APP_CONFIG = Object.freeze({
         else if (action === 'archive') changeStatus(row, 'arquivado');
         else if (action === 'unarchive') changeStatus(row, 'ativo');
         else if (action === 'anonymize') anonymize(row);
+        else if (action === 'delete') excluir(row);
         else if (action === 'docs') openDocumentos(row);
       },
     });
